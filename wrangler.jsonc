@@ -10,8 +10,14 @@
   },
   "kv_namespaces": [
     {
-      "binding": "OAUTH_KV",
-      "id": "ticklens-oauth"
+      "kv_namespaces": [{
+                    "binding": "KV_BINDING",
+                    "id": "ebb51e4c3af946ab9cf681eef8aa1263"
+                 }]
+      
+                    
+                    
+              
     }
   ]
 }
