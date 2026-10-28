@@ -1,5 +1,5 @@
 
-name: TickLens Cloudflare Build
+name: Fix TickLens Lockfile
 
 on:
   workflow_dispatch:
@@ -11,36 +11,34 @@ permissions:
   contents: write
 
 jobs:
-  build:
+  update-lockfile:
     runs-on: ubuntu-latest
 
     steps:
       - name: Get project files
         uses: actions/checkout@v4
 
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.10.0
+
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 22
 
-      - name: Set up pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 10
-
-      - name: Install dependencies
+      - name: Update lockfile
         run: pnpm install --no-frozen-lockfile
 
-      - name: Build TickLens
-        run: pnpm run build
-
-      - name: Upload build output
-        if: success()
-        uses: actions/upload-artifact@v4
-        with:
-          name: ticklens-build
-          path: |
-            .output/
-            dist/
-            .vercel/output/
-          if-no-files-found: warn
+      - name: Save updated lockfile to GitHub
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add pnpm-lock.yaml
+          if ! git diff --cached --quiet; then
+            git commit -m "Update pnpm lockfile"
+            git push
+          else
+            echo "Lockfile is already up to date."
+          fi
