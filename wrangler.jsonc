@@ -4,5 +4,14 @@
   "name": "hope-analysis-tool-12c786",
   "compatibility_date": "2026-10-28",
   "compatibility_flags": ["nodejs_compat"],
-  "main": "@tanstack/react-start/server-entry"
+  "main": "@tanstack/react-start/server-entry",
+  "vars": {
+    "DERIV_CLIENT_ID": "34NM6oGFpDwmMKeg8t9fU"
+  },
+  "kv_namespaces": [
+    {
+      "binding": "OAUTH_KV",
+      "id": "ticklens-oauth"
+    }
+  ]
 }
