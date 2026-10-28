@@ -1,0 +1,8 @@
+
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "hope-analysis-tool-12c786",
+  "compatibility_date": "2026-10-28",
+  "compatibility_flags": ["nodejs_compat"],
+  "main": "@tanstack/react-start/server-entry"
+}
