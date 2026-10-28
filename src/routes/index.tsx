@@ -61,9 +61,29 @@ function Home() {
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <StatusPill status={main.status} />
-            <SettingsDialog settings={settings} onSave={save} open={settingsOpen} onOpenChange={setSettingsOpen} />
-          </div>
+  <StatusPill status={main.status} />
+
+  <button
+    type="button"
+    onClick={() => {
+      window.location.href =
+        'https://oauth.deriv.com/oauth2/authorize?app_id=34NM6oGFpDwmMKeg8t9fU'
+    }}
+    className="rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground"
+  >
+    Connect to Deriv
+  </button>
+
+  <SettingsDialog
+    settings={settings}
+    onSave={save}
+    open={settingsOpen}
+    onOpenChange={setSettingsOpen}
+  />
+</div>
+            
+            
+          
         </div>
       </header>
 
@@ -74,7 +94,7 @@ function Home() {
           </h1>
           <p className="text-muted-foreground">
             Pick a Deriv synthetic market, press start, and TickLens reads its tick history and live tick stream to show
-            last-digit probabilities, even/odd, over/under, rise/fall and a prediction for the next digit.
+            last-digit probabilities, even/odd, over/under, rise/fallnd a prediction for the next digit.
           </p>
         </div>
 
