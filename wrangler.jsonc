@@ -6,15 +6,12 @@
   "compatibility_flags": ["nodejs_compat"],
   "main": "@tanstack/react-start/server-entry",
   "vars": {
-    "DERIV_CLIENT_ID": "PASTE_YOUR_EXISTING_DERIV_CLIENT_ID_HERE"
+    "DERIV_CLIENT_ID": "34NM6oGFpDwmMKeg8t9fU"
   },
-  
-    
-    
-      
-    "kv_namespaces": [{
-                    "binding": "KV_BINDING",
-                    "id": "ebb51e4c3af946ab9cf681eef8aa1263"
-                 }]
-  
-
+  "kv_namespaces": [
+    {
+      "binding": "OAUTH_KV",
+      "id": "ebb51e4c3af946ab9cf681eef8aa1263"
+    }
+  ]
+}
