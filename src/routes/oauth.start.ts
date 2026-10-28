@@ -7,7 +7,7 @@ export const Route = createFileRoute('/oauth/start')({
   server: {
     handlers: {
       GET: async ({ request }) => {
-        const clientId = env.DERIV_CLIENT_ID
+        const clientId = (env as { DERIV_CLIENT_ID?: string }).DERIV_CLIENT_ID
 
         if (!clientId) {
           return new Response(
