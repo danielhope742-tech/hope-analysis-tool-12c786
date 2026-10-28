@@ -9,7 +9,11 @@ export default defineConfig({
   resolve: { tsconfigPaths: true },
   plugins: [
     cloudflare({ viteEnvironment: { name: 'ssr' } }),
-    tanstackStart(),
+    tanstackStart({
+  router: {
+    routesDirectory: 'Routes',
+  },
+}),
     viteReact(),
     tailwindcss(),
   ],
