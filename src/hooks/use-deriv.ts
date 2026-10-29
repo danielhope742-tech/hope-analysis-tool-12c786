@@ -13,7 +13,7 @@ import {
 } from '@/lib/deriv'
 
 import {
-  predictNextDigit,
+  predictNextDigit as estimateNextDigit,
   type DigitPrediction,
 } from '@/lib/analysis'
 
@@ -216,7 +216,7 @@ export function useTickFeed(
             digits,
             pipSize: pip,
             lastDigitValue: digits[digits.length - 1] ?? null,
-            prediction: predictNextDigit(digits),
+            prediction: estimateNextDigit(digits),
             loading: false,
           }
 
@@ -274,7 +274,7 @@ export function useTickFeed(
             pipSize: pip,
             tickCount: state.tickCount + 1,
             lastDigitValue: digit,
-            prediction: predictNextDigit(digits),
+            prediction: estimateNextDigit(digits),
             predictionHistory,
             accuracy,
           }
