@@ -451,6 +451,139 @@ export function Analyzer({
         onPick={setMdPick}
         hasPrediction={!!prediction}
       />
+      
+      {/* Live Prediction History */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Activity className="size-5 text-primary" />
+            Live Prediction History
+          </CardTitle>
+          <CardDescription>
+            Compare each previous predicted digit with the
+            next actual live tick. Newest results appear first.
+          </CardDescription>
+        </CardHeader>
+
+        <CardContent className="space-y-4">
+          {feed.predictionHistory.length > 0 ? (
+            <>
+              <div className="grid grid-cols-3 gap-2">
+                <div className="rounded-lg border p-3">
+                  <div className="text-xs text-muted-foreground">
+                    Tested
+                  </div>
+                  <div className="text-2xl font-bold tabular">
+                    {feed.predictionHistory.length}
+                  </div>
+                </div>
+
+                <div className="rounded-lg border p-3">
+                  <div className="text-xs text-muted-foreground">
+                    Exact hits
+                  </div>
+                  <div className="text-2xl font-bold tabular">
+                    {feed.predictionHistory.filter(
+                      (item) => item.correct,
+                    ).length}
+                  </div>
+                </div>
+
+                <div className="rounded-lg border p-3">
+                  <div className="text-xs text-muted-foreground">
+                    Top 3 hits
+                  </div>
+                  <div className="text-2xl font-bold tabular">
+                    {feed.predictionHistory.filter(
+                      (item) => item.top3Correct,
+                    ).length}
+                  </div>
+                </div>
+              </div>
+
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b text-left text-muted-foreground">
+                      <th className="py-2 pr-3">Time</th>
+                      <th className="py-2 pr-3">Predicted</th>
+                      <th className="py-2 pr-3">Actual</th>
+                      <th className="py-2 pr-3">Estimate</th>
+                      <th className="py-2">Result</th>
+                    </tr>
+                  </thead>
+
+                  <tbody>
+                    {feed.predictionHistory.map((item, index) => (
+                      <tr
+                        key={`${item.timestamp}-${index}`}
+                        className="border-b last:border-0"
+                      >
+                        <td className="whitespace-nowrap py-2 pr-3 text-xs text-muted-foreground">
+                          {new Date(
+                            item.timestamp * 1000,
+                          ).toLocaleTimeString()}
+                        </td>
+
+                        <td className="py-2 pr-3 font-bold tabular">
+                          {item.predictedDigit}
+                        </td>
+
+                        <td className="py-2 pr-3 font-bold tabular">
+                          {item.actualDigit}
+                        </td>
+
+                        <td className="py-2 pr-3 tabular">
+                          {(item.confidence * 100).toFixed(1)}%
+                        </td>
+
+                        <td className="py-2">
+                          <div className="flex flex-col gap-1">
+                            <Badge
+                              variant={
+                                item.correct
+                                  ? "default"
+                                  : "destructive"
+                              }
+                            >
+                              {item.correct ? "Exact hit" : "Miss"}
+                            </Badge>
+
+                            {item.top3Correct && !item.correct && (
+                              <span className="text-xs text-muted-foreground">
+                                Top 3 hit
+                              </span>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              <p className="text-xs text-muted-foreground">
+                This panel shows the recorded prediction history,
+                not a guarantee of future results. The estimate is
+                a model score, not a verified probability.
+              </p>
+            </>
+          ) : (
+            <div className="rounded-lg border border-dashed p-6 text-center">
+              <Activity className="mx-auto mb-2 size-8 text-muted-foreground" />
+              <p className="font-semibold">
+                Waiting for prediction results
+              </p>
+              <p className="mt-1 text-sm text-muted-foreground">
+                Start analysis and wait for new live ticks.
+                History appears when a previous prediction can
+                be compared with an actual tick.
+              </p>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
 
       {/* TickLens AI Digit Ranking Scanner */}
       <Card>
