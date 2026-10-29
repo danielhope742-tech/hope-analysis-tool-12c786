@@ -1,6 +1,7 @@
-// TickLens digit analysis engine.
-// Descriptive statistics and experimental estimates only.
-// Past digit patterns do not guarantee future outcomes.
+
+ // TickLens digit analysis engine.
+ // Descriptive statistics and experimental estimates only.
+ // Past digit patterns do not guarantee future outcomes.
 
 export interface DigitPrediction {
   digit: number
@@ -57,7 +58,9 @@ function getGaps(digits: number[]): number[] {
   })
 }
 
-export function predictNextDigit(digitsInput: number[]): DigitPrediction | null {
+export function predictNextDigit(
+  digitsInput: number[],
+): DigitPrediction | null {
   const digits = validDigits(digitsInput)
   if (digits.length < 20) return null
 
@@ -71,15 +74,13 @@ export function predictNextDigit(digitsInput: number[]): DigitPrediction | null 
   const longP = normalize(allCounts.map((c) => c + 1))
   const recentP = normalize(recentCounts.map((c) => c + 1))
 
-  // Estimate next digit based only on historical transitions from the
-  // current digit. This is experimental and may have no predictive edge.
+  // Experimental transition estimate.
   const transitions = Array(10).fill(1) as number[]
   for (let i = 1; i < digits.length; i++) {
     if (digits[i - 1] === last) transitions[digits[i]]++
   }
   const transitionP = normalize(transitions)
 
-  // No bonus for a digit merely because it has been absent for a long time.
   const distribution = normalize(
     DIGITS.map(
       (d) => 0.4 * longP[d] + 0.3 * recentP[d] + 0.3 * transitionP[d],
@@ -114,8 +115,11 @@ export function analyzeWindow(
 
   let rises = 0
   let falls = 0
+
   for (let i = 1; i < quotes.length; i++) {
-    if (!Number.isFinite(quotes[i]) || !Number.isFinite(quotes[i - 1])) continue
+    if (!Number.isFinite(quotes[i]) || !Number.isFinite(quotes[i - 1])) {
+      continue
+    }
     if (quotes[i] > quotes[i - 1]) rises++
     else if (quotes[i] < quotes[i - 1]) falls++
   }
@@ -237,6 +241,8 @@ export function matchesDiffers(
   if (!total) return null
 
   const recent = digits.slice(-50)
+  const gaps = getGaps(digits)
+
   const rows = DIGITS.map((digit) => {
     const count = digits.filter((d) => d === digit).length
     const recentCount = recent.filter((d) => d === digit).length
@@ -246,7 +252,7 @@ export function matchesDiffers(
       matches: (count / total) * 100,
       recent: (recentCount / recent.length) * 100,
       next: prediction ? prediction.distribution[digit] * 100 : 0,
-      gap: getGaps(digits)[digit],
+      gap: gaps[digit],
     }
   })
 
@@ -260,4 +266,4 @@ export function matchesDiffers(
     bestDiffers: sorted[0].digit,
     bestMatches: sorted[sorted.length - 1].digit,
   }
-              
+}
