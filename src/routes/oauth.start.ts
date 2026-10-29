@@ -10,9 +10,11 @@ export const Route = createFileRoute('/oauth/start')({
         const bindings = env as {
           DERIV_CLIENT_ID?: string
           OAUTH_KV?: {
-            put: (key: string, value: string, options?: {
-              expirationTtl?: number
-            }) => Promise<void>
+            put: (
+              key: string,
+              value: string,
+              options?: { expirationTtl?: number },
+            ) => Promise<void>
           }
         }
 
@@ -51,7 +53,15 @@ export const Route = createFileRoute('/oauth/start')({
         authorizeUrl.searchParams.set('code_challenge', challenge)
         authorizeUrl.searchParams.set('code_challenge_method', 'S256')
 
-        return Response.redirect(authorizeUrl.toString(), 302)
+        return new Response(null, {
+          status: 302,
+          headers: {
+            Location: authorizeUrl.toString(),
+            'Set-Cookie':
+              `ticklens_oauth_state=${state}; Max-Age=600; Path=/; Secure; HttpOnly; SameSite=Lax`,
+            'Cache-Control': 'no-store',
+          },
+        })
       },
     },
   },
