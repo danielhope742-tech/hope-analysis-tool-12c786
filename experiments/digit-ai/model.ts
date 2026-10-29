@@ -166,14 +166,33 @@ export function trainDigitModel(
     trainingExamples: examples.length
   };
 }
-
+function isValidTrainedModel(
+  model: TrainedDigitModel
+): boolean {
+  return (
+    model.version === "ticklens-digit-logreg-v1" &&
+    model.featureLength === FEATURE_LENGTH &&
+    model.weights.length === CLASSES &&
+    model.weights.every(
+      row =>
+        row.length === FEATURE_LENGTH &&
+        row.every(Number.isFinite)
+    ) &&
+    model.bias.length === CLASSES &&
+    model.bias.every(Number.isFinite) &&
+    Number.isInteger(model.trainingExamples) &&
+    model.trainingExamples >= 20
+  );
+}
 /**
  * Predict a probability distribution from observed digits.
  */
 export function predictDigit(
   model: TrainedDigitModel,
   history: readonly number[]
-): ModelPrediction | null {
+): ModelPrediction | null {  if (!isValidTrainedModel(model)) {
+    return null;
+}
   const x = featuresFor(history);
 
   if (!x) return null;
