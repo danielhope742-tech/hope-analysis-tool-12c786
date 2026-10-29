@@ -238,17 +238,31 @@ const predictionHistory = prev
               }
             : state.accuracy
           const digits = [...state.digits, digit].slice(-count)
-          state = {
-            ...state,
-            quotes: [...state.quotes, tick.quote].slice(-count),
-            epochs: [...state.epochs, tick.epoch].slice(-count),
-            digits,
-            pipSize: pip,
-            tickCount: state.tickCount + 1,
-            lastDigitValue: digit,
-            prediction: predictNextDigit(digits),
-            accuracy,
-          }
+          
+state = {
+  ...state,
+  quotes: [...state.quotes, tick.quote].slice(-count),
+  epochs: [...state.epochs, tick.epoch].slice(-count),
+  digits,
+  pipSize: pip,
+  tickCount: state.tickCount + 1,
+  lastDigitValue: digit,
+  prediction: predictNextDigit(digits),
+  predictionHistory,
+  accuracy,
+}
+
+            
+            
+            
+            
+            
+            
+            
+        
+            
+            
+          
           setFeed(state)
         }
       },
