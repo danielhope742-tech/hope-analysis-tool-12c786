@@ -1,9 +1,8 @@
-
-import { describe, expect, it } from "vitest";
 import {
   featuresFor,
   trainDigitModel,
-  predictDigit
+  predictDigit,
+  type TrainedDigitModel
 } from "./model";
 
 describe("TickLens experimental digit model", () => {
