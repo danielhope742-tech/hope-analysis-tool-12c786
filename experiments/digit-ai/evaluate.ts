@@ -1,5 +1,5 @@
 
-import { featuresFor, trainDigitModel, predictDigit } from "./model";
+import { trainDigitModel, predictDigit } from "./model";
 
 type Metrics = {
   samples: number;
@@ -7,14 +7,6 @@ type Metrics = {
   top3Accuracy: number;
   meanLogLoss: number;
 };
-
-function parseDigits(text: string): number[] {
-  return text
-    .trim()
-    .split(/[\s,;]+/)
-    .map(Number)
-    .filter(n => Number.isInteger(n) && n >= 0 && n <= 9);
-}
 
 function metrics(
   actual: number[],
@@ -48,8 +40,8 @@ function metrics(
 }
 
 /**
- * Split by time order: first 70% train, next 15% validate,
- * final 15% held out for testing.
+ * Chronological evaluation:
+ * 70% training, 15% validation, 15% held-out testing.
  */
 export function evaluateDigits(rawDigits: number[]) {
   const digits = rawDigits.filter(
@@ -69,42 +61,37 @@ export function evaluateDigits(rawDigits: number[]) {
 
   const model = trainDigitModel(train);
 
-  const testActual: number[] = [];
-  const testProbabilities: number[][] = [];
-  const testRanked: number[][] = [];
+  const actual: number[] = [];
+  const probabilities: number[][] = [];
+  const ranked: number[][] = [];
 
   for (let i = validationEnd; i < digits.length; i++) {
     const prediction = predictDigit(model, digits.slice(0, i));
 
     if (!prediction) continue;
 
-    testActual.push(digits[i]);
-    testProbabilities.push(prediction.distribution);
-    testRanked.push(prediction.ranked);
+    actual.push(digits[i]);
+    probabilities.push(prediction.distribution);
+    ranked.push(prediction.ranked);
   }
-
-  const modelMetrics = metrics(
-    testActual,
-    testProbabilities,
-    testRanked
-  );
 
   const counts = Array(10).fill(0) as number[];
   for (const digit of train) counts[digit]++;
 
-  const total = train.length;
-  const baseline = counts.map(count => (count + 1) / (total + 10));
+  const baseline = counts.map(
+    count => (count + 1) / (train.length + 10)
+  );
 
-  const baselineProbabilities = testActual.map(() => baseline);
-  const baselineRanked = testActual.map(() =>
+  const baselineProbabilities = actual.map(() => baseline);
+  const baselineRanked = actual.map(() =>
     baseline
       .map((_, i) => i)
       .sort((a, b) => baseline[b] - baseline[a])
   );
 
   const uniform = Array(10).fill(0.1) as number[];
-  const uniformProbabilities = testActual.map(() => uniform);
-  const uniformRanked = testActual.map(() =>
+  const uniformProbabilities = actual.map(() => uniform);
+  const uniformRanked = actual.map(() =>
     Array.from({ length: 10 }, (_, i) => i)
   );
 
@@ -113,22 +100,16 @@ export function evaluateDigits(rawDigits: number[]) {
     trainingDigits: train.length,
     validationDigits: validation.length,
     testDigits: test.length,
-    model: modelMetrics,
+    model: metrics(actual, probabilities, ranked),
     frequencyBaseline: metrics(
-      testActual,
+      actual,
       baselineProbabilities,
       baselineRanked
     ),
     uniformBaseline: metrics(
-      testActual,
+      actual,
       uniformProbabilities,
       uniformRanked
     )
   };
 }
-
-/**
- * Example:
- * const result = evaluateDigits([1,2,3,...]);
- * console.log(result);
- */
