@@ -115,6 +115,81 @@ const [matchesStake, setMatchesStake] = useState('0.35')
             feed={feed}
           />
         </div>
+        
+<section className="rounded-xl border bg-card p-5 space-y-4">
+  <div>
+    <h2 className="text-xl font-bold">Manual Matches Contract</h2>
+    <p className="text-sm text-muted-foreground">
+      Prepare your contract details, then place the trade yourself in Deriv.
+    </p>
+  </div>
+
+  <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+    <label className="space-y-2 text-sm font-medium">
+      Market
+      <select
+        className="w-full rounded-md border bg-background p-3"
+        value={symbol}
+        onChange={(e) => setSymbol(e.target.value)}
+      >
+        {markets.map((m) => (
+          <option key={m.symbol} value={m.symbol}>
+            {m.symbol}
+          </option>
+        ))}
+      </select>
+    </label>
+
+    <label className="space-y-2 text-sm font-medium">
+      Matches digit
+      <select
+        className="w-full rounded-md border bg-background p-3"
+        value={matchesDigit}
+        onChange={(e) => setMatchesDigit(Number(e.target.value))}
+      >
+        {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map((digit) => (
+          <option key={digit} value={digit}>
+            {digit}
+          </option>
+        ))}
+      </select>
+    </label>
+
+    <label className="space-y-2 text-sm font-medium">
+      Stake
+      <input
+        className="w-full rounded-md border bg-background p-3"
+        type="number"
+        min="0.35"
+        step="0.01"
+        value={matchesStake}
+        onChange={(e) => setMatchesStake(e.target.value)}
+      />
+    </label>
+  </div>
+
+  <div className="rounded-lg border p-4 space-y-1">
+    <p><strong>Contract:</strong> Matches</p>
+    <p><strong>Market:</strong> {symbol}</p>
+    <p><strong>Prediction digit:</strong> {matchesDigit}</p>
+    <p><strong>Stake entered:</strong> {matchesStake}</p>
+  </div>
+
+  <button
+    type="button"
+    className="w-full rounded-md bg-primary px-4 py-3 font-medium text-primary-foreground"
+    onClick={() => window.open('https://app.deriv.com/', '_blank', 'noopener,noreferrer')}
+  >
+    Open Deriv to place manually
+  </button>
+
+  <p className="text-xs text-muted-foreground">
+    This panel does not purchase contracts or send trades to Deriv.
+    Confirm the market, contract type, digit, stake, and payout on Deriv.
+    The minimum stake depends on the market and account currency.
+  </p>
+</section>
+
 
         <Scanner
           markets={markets}
