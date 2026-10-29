@@ -104,6 +104,7 @@ export interface FeedState {
   tickCount: number // live ticks received since start (excludes history)
   lastDigitValue: number | null
   prediction: DigitPrediction | null
+  predictionHistory: PredictionRecord[]
   accuracy: Accuracy
   error: DerivError | null
   loading: boolean
@@ -126,7 +127,9 @@ function emptyFeed(pipSize: number): FeedState {
     tickCount: 0,
     lastDigitValue: null,
     prediction: null,
-    accuracy: emptyAccuracy,
+predictionHistory: [],
+accuracy: emptyAccuracy,
+    
     error: null,
     loading: false,
   }
