@@ -87,6 +87,15 @@ export interface Accuracy {
   differsHits: number // least likely digit did not appear
 }
 
+export interface PredictionRecord {
+  predictedDigit: number
+  actualDigit: number
+  confidence: number
+  timestamp: number
+  correct: boolean
+  top3Correct: boolean
+}
+
 export interface FeedState {
   quotes: number[]
   digits: number[]
