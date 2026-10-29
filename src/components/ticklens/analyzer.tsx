@@ -41,7 +41,12 @@ import {
   analyzeWindow,
   matchesDiffers,
   outcomeOdds,
+  predictNextDigit,
 } from '@/lib/analysis'
+  
+  
+  
+
 import type { Market } from '@/lib/markets'
 import { cn } from '@/lib/utils'
 
