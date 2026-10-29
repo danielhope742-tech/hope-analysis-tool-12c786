@@ -189,8 +189,39 @@ export function useTickFeed(
           const tick = msg.tick as TickPayload
           const pip = tick.pip_size ?? state.pipSize
           const digit = lastDigit(tick.quote, pip)
-          const prev = state.prediction
-          const accuracy = prev
+          
+const prev = state.prediction
+
+const accuracy = prev
+  ? {
+      predictions: state.accuracy.predictions + 1,
+      digitHits:
+        state.accuracy.digitHits + (prev.digit === digit ? 1 : 0),
+      top3Hits:
+        state.accuracy.top3Hits +
+        (prev.ranked.slice(0, 3).includes(digit) ? 1 : 0),
+      sideHits:
+        state.accuracy.sideHits + (sideOf(prev) === digit % 2 ? 1 : 0),
+      differsHits:
+        state.accuracy.differsHits + (prev.ranked[9] !== digit ? 1 : 0),
+    }
+  : state.accuracy
+
+const predictionHistory = prev
+  ? [
+      {
+        predictedDigit: prev.digit,
+        actualDigit: digit,
+        confidence: prev.confidence,
+        timestamp: tick.epoch,
+        correct: prev.digit === digit,
+        top3Correct: prev.ranked.slice(0, 3).includes(digit),
+      },
+      ...state.predictionHistory,
+    ].slice(0, 20)
+  : state.predictionHistory
+
+          
             ? {
                 predictions: state.accuracy.predictions + 1,
                 digitHits:
