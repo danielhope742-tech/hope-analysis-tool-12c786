@@ -68,4 +68,5 @@ describe("TickLens experimental digit model", () => {
     expect(
       predictDigit(invalidModel, history)
     ).toBeNull();
-  });});
+  });
+});
