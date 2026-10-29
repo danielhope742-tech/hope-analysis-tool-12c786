@@ -452,6 +452,128 @@ export function Analyzer({
         hasPrediction={!!prediction}
       />
       
+      {/* Historical Backtesting Panel */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Target className="size-5 text-primary" />
+            Historical Backtesting
+          </CardTitle>
+          <CardDescription>
+            Tests the digit model against earlier ticks using
+            a rolling, one-step-ahead prediction. No trades are placed.
+          </CardDescription>
+        </CardHeader>
+
+        <CardContent>
+          {(() => {
+            const digits = feed.digits
+              .filter((d) => Number.isInteger(d) && d >= 0 && d <= 9)
+
+            const testLimit = Math.min(500, Math.max(0, digits.length - 20))
+            const start = digits.length - testLimit
+
+            let exactHits = 0
+            let top3Hits = 0
+            let differsHits = 0
+            let tested = 0
+
+            for (let i = start; i < digits.length; i++) {
+              const pastDigits = digits.slice(0, i)
+              if (pastDigits.length < 20) continue
+
+              const estimate = predictNextDigit(pastDigits)
+              if (!estimate) continue
+
+              const actual = digits[i]
+              tested++
+
+              if (estimate.digit === actual) exactHits++
+              if (estimate.ranked.slice(0, 3).includes(actual)) top3Hits++
+              if (estimate.digit !== actual) differsHits++
+            }
+
+            const exactRate = tested ? exactHits / tested * 100 : null
+            const top3Rate = tested ? top3Hits / tested * 100 : null
+            const differsRate = tested ? differsHits / tested * 100 : null
+
+            const status =
+              tested < 100
+                ? 'WAIT — collect at least 100 test predictions'
+                : exactRate !== null && exactRate > 10
+                  ? 'CHECK — compare with a larger holdout sample'
+                  : 'WAIT — no demonstrated exact-digit edge'
+
+            return (
+              <div className="space-y-4">
+                <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+                  <div className="rounded-lg border p-3">
+                    <div className="text-xs text-muted-foreground">
+                      Tests
+                    </div>
+                    <div className="text-2xl font-bold tabular">
+                      {tested}
+                    </div>
+                  </div>
+
+                  <div className="rounded-lg border p-3">
+                    <div className="text-xs text-muted-foreground">
+                      Exact hit rate
+                    </div>
+                    <div className="text-2xl font-bold tabular">
+                      {exactRate === null ? '—' : `${exactRate.toFixed(1)}%`}
+                    </div>
+                    <div className="text-xs text-muted-foreground">
+                      10% reference
+                    </div>
+                  </div>
+
+                  <div className="rounded-lg border p-3">
+                    <div className="text-xs text-muted-foreground">
+                      Top 3 hit rate
+                    </div>
+                    <div className="text-2xl font-bold tabular">
+                      {top3Rate === null ? '—' : `${top3Rate.toFixed(1)}%`}
+                    </div>
+                    <div className="text-xs text-muted-foreground">
+                      30% reference
+                    </div>
+                  </div>
+
+                  <div className="rounded-lg border p-3">
+                    <div className="text-xs text-muted-foreground">
+                      Differs rate
+                    </div>
+                    <div className="text-2xl font-bold tabular">
+                      {differsRate === null ? '—' : `${differsRate.toFixed(1)}%`}
+                    </div>
+                    <div className="text-xs text-muted-foreground">
+                      Reference depends on contract
+                    </div>
+                  </div>
+                </div>
+
+                <div className="rounded-lg border p-3">
+                  <div className="mb-1 text-sm font-semibold">
+                    Scanner status
+                  </div>
+                  <div className="text-sm">{status}</div>
+                </div>
+
+                <p className="text-xs text-muted-foreground">
+                  Uses up to 500 rolling one-step tests from the ticks
+                  currently loaded. The estimates use only ticks before
+                  each tested outcome. Results are historical, may be
+                  affected by repeated testing, and do not guarantee
+                  future performance or profit.
+                </p>
+              </div>
+            )
+          })()}
+        </CardContent>
+      </Card>
+
+      
       {/* Live Prediction History */}
       <Card>
         <CardHeader>
