@@ -452,6 +452,114 @@ export function Analyzer({
         hasPrediction={!!prediction}
       />
 
+      {/* TickLens AI Digit Ranking Scanner */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Brain className="size-5 text-primary" />
+            AI Digit Ranking Scanner
+          </CardTitle>
+          <CardDescription>
+            All digits ranked by experimental model estimates.
+            Higher rank does not guarantee the next result.
+          </CardDescription>
+        </CardHeader>
+
+        <CardContent className="space-y-4">
+          {prediction ? (
+            <>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="rounded-lg border border-primary/50 bg-primary/5 p-3">
+                  <div className="text-xs text-muted-foreground">
+                    Match candidate
+                  </div>
+                  <div className="text-3xl font-bold text-primary">
+                    {md?.bestMatches ?? prediction.ranked[0]}
+                  </div>
+                  <div className="text-sm">
+                    {(
+                      prediction.distribution[
+                        md?.bestMatches ?? prediction.ranked[0]
+                      ] * 100
+                    ).toFixed(1)}% estimated match score
+                  </div>
+                </div>
+
+                <div className="rounded-lg border p-3">
+                  <div className="text-xs text-muted-foreground">
+                    Differ candidate
+                  </div>
+                  <div className="text-3xl font-bold">
+                    {md?.bestDiffers ?? prediction.ranked[9]}
+                  </div>
+                  <div className="text-sm">
+                    {(
+                      100 -
+                      prediction.distribution[
+                        md?.bestDiffers ?? prediction.ranked[9]
+                      ] * 100
+                    ).toFixed(1)}% estimated differs score
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-3">
+                {prediction.ranked.map((digit, index) => {
+                  const score =
+                    prediction.distribution[digit] * 100
+
+                  return (
+                    <div key={digit} className="space-y-1">
+                      <div className="flex items-center justify-between text-sm">
+                        <span className="flex items-center gap-2">
+                          <span className="flex size-7 items-center justify-center rounded-md border font-bold">
+                            {digit}
+                          </span>
+                          <span>
+                            #{index + 1}
+                            {index === 0 ? ' · Highest estimate' : ''}
+                            {index === 9 ? ' · Lowest estimate' : ''}
+                          </span>
+                        </span>
+                        <span className="font-semibold tabular">
+                          {score.toFixed(1)}%
+                        </span>
+                      </div>
+
+                      <div className="h-2 overflow-hidden rounded-full bg-muted">
+                        <div
+                          className={cn(
+                            'h-full rounded-full',
+                            index === 0
+                              ? 'bg-primary'
+                              : index === 9
+                                ? 'bg-destructive'
+                                : 'bg-chart-2',
+                          )}
+                          style={{ width: `${Math.min(100, score)}%` }}
+                        />
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+
+              <p className="text-xs text-muted-foreground">
+                These are model scores derived from past ticks, not
+                verified probabilities. Synthetic market digits may
+                remain unpredictable. Use this scanner for analysis,
+                not as a guarantee of profit.
+              </p>
+            </>
+          ) : (
+            <p className="text-sm text-muted-foreground">
+              Start analysis and wait for at least 20 valid ticks
+              to load the digit ranking.
+            </p>
+          )}
+        </CardContent>
+      </Card>
+
       {/* Digit distribution */}
       <Card>
         <CardHeader>
