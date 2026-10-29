@@ -1,3 +1,4 @@
+
 import { useEffect, useRef, useState } from 'react'
 
 import {
@@ -10,15 +11,23 @@ import {
   type HistoryPayload,
   type TickPayload,
 } from '@/lib/deriv'
-import { predictNextDigit, type DigitPrediction } from '@/lib/analysis'
+
+import {
+  predictNextDigit,
+  type DigitPrediction,
+} from '@/lib/analysis'
+
 import {
   FALLBACK_MARKETS,
   marketsFromActiveSymbols,
   type Market,
 } from '@/lib/markets'
 
-/** Opens a socket while `enabled` and reconnects automatically. */
-export function useDerivConnection(settings: DerivSettings, enabled: boolean) {
+/** Opens a socket while enabled and reconnects automatically. */
+export function useDerivConnection(
+  settings: DerivSettings,
+  enabled: boolean,
+) {
   const [client, setClient] = useState<DerivClient | null>(null)
   const [status, setStatus] = useState<ConnectionStatus>('idle')
   const [error, setError] = useState<DerivError | null>(null)
@@ -28,14 +37,19 @@ export function useDerivConnection(settings: DerivSettings, enabled: boolean) {
       setStatus('idle')
       return
     }
+
     const c = new DerivClient(settings)
+
     const offStatus = c.onStatus((s) => {
       setStatus(s)
       if (s === 'open') setError(null)
     })
+
     const offError = c.onError(setError)
+
     c.connect()
     setClient(c)
+
     return () => {
       offStatus()
       offError()
@@ -56,23 +70,27 @@ export function useSyntheticMarkets(
 
   useEffect(() => {
     if (!client || status !== 'open' || loaded.current) return
+
     client
       .request<
         DerivMessage & {
-          active_symbols: Parameters<typeof marketsFromActiveSymbols>[0]
+          active_symbols: Parameters<
+            typeof marketsFromActiveSymbols
+          >[0]
         }
       >({
         active_symbols: 'brief',
       })
       .then((res) => {
         const list = marketsFromActiveSymbols(res.active_symbols)
+
         if (list.length) {
           loaded.current = true
           setMarkets(list)
         }
       })
       .catch(() => {
-        // keep the fallback list
+        // Keep the fallback list.
       })
   }, [client, status])
 
@@ -83,8 +101,8 @@ export interface Accuracy {
   predictions: number
   digitHits: number
   top3Hits: number
-  sideHits: number // even/odd side called correctly
-  differsHits: number // least likely digit did not appear
+  sideHits: number
+  differsHits: number
 }
 
 export interface PredictionRecord {
@@ -101,7 +119,7 @@ export interface FeedState {
   digits: number[]
   epochs: number[]
   pipSize: number
-  tickCount: number // live ticks received since start (excludes history)
+  tickCount: number
   lastDigitValue: number | null
   prediction: DigitPrediction | null
   predictionHistory: PredictionRecord[]
@@ -127,17 +145,16 @@ function emptyFeed(pipSize: number): FeedState {
     tickCount: 0,
     lastDigitValue: null,
     prediction: null,
-predictionHistory: [],
-accuracy: emptyAccuracy,
-    
+    predictionHistory: [],
+    accuracy: { ...emptyAccuracy },
     error: null,
     loading: false,
   }
 }
 
 /**
- * Loads `count` ticks of history for one market, then keeps the window
- * rolling with the live tick stream while `running` is true.
+ * Loads historical ticks, then follows the live tick stream.
+ * No trades are placed by this hook.
  */
 export function useTickFeed(
   client: DerivClient | null,
@@ -150,28 +167,48 @@ export function useTickFeed(
     emptyFeed(market?.pipSize ?? 2),
   )
 
-  // Switching market or window clears the previous market's numbers.
+  // Clear previous data when the selected market or window changes.
   useEffect(() => {
     setFeed(emptyFeed(market?.pipSize ?? 2))
   }, [market?.symbol, count]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!client || status !== 'open' || !running || !market) return
-    let state: FeedState = { ...emptyFeed(market.pipSize), loading: true }
+
+    let state: FeedState = {
+      ...emptyFeed(market.pipSize),
+      loading: true,
+    }
+
     setFeed(state)
 
     const stop = client.subscribe(
-      { ticks_history: market.symbol, count, end: 'latest', style: 'ticks' },
+      {
+        ticks_history: market.symbol,
+        count,
+        end: 'latest',
+        style: 'ticks',
+      },
       (msg) => {
         if (msg.error) {
-          state = { ...state, error: msg.error, loading: false }
+          state = {
+            ...state,
+            error: msg.error,
+            loading: false,
+          }
           setFeed(state)
           return
         }
+
         if (msg.msg_type === 'history') {
           const history = msg.history as HistoryPayload
-          const pip = (msg.pip_size as number | undefined) ?? market.pipSize
-          const digits = history.prices.map((p) => lastDigit(p, pip))
+          const pip =
+            (msg.pip_size as number | undefined) ?? market.pipSize
+
+          const digits = history.prices.map((price) =>
+            lastDigit(price, pip),
+          )
+
           state = {
             ...state,
             quotes: history.prices,
@@ -182,50 +219,23 @@ export function useTickFeed(
             prediction: predictNextDigit(digits),
             loading: false,
           }
+
           setFeed(state)
           return
         }
+
         if (msg.msg_type === 'tick') {
           const tick = msg.tick as TickPayload
           const pip = tick.pip_size ?? state.pipSize
           const digit = lastDigit(tick.quote, pip)
-          
-const prev = state.prediction
+          const prev = state.prediction
 
-const accuracy = prev
-  ? {
-      predictions: state.accuracy.predictions + 1,
-      digitHits:
-        state.accuracy.digitHits + (prev.digit === digit ? 1 : 0),
-      top3Hits:
-        state.accuracy.top3Hits +
-        (prev.ranked.slice(0, 3).includes(digit) ? 1 : 0),
-      sideHits:
-        state.accuracy.sideHits + (sideOf(prev) === digit % 2 ? 1 : 0),
-      differsHits:
-        state.accuracy.differsHits + (prev.ranked[9] !== digit ? 1 : 0),
-    }
-  : state.accuracy
-
-const predictionHistory = prev
-  ? [
-      {
-        predictedDigit: prev.digit,
-        actualDigit: digit,
-        confidence: prev.confidence,
-        timestamp: tick.epoch,
-        correct: prev.digit === digit,
-        top3Correct: prev.ranked.slice(0, 3).includes(digit),
-      },
-      ...state.predictionHistory,
-    ].slice(0, 20)
-  : state.predictionHistory
-
-          
+          const accuracy: Accuracy = prev
             ? {
                 predictions: state.accuracy.predictions + 1,
                 digitHits:
-                  state.accuracy.digitHits + (prev.digit === digit ? 1 : 0),
+                  state.accuracy.digitHits +
+                  (prev.digit === digit ? 1 : 0),
                 top3Hits:
                   state.accuracy.top3Hits +
                   (prev.ranked.slice(0, 3).includes(digit) ? 1 : 0),
@@ -237,48 +247,63 @@ const predictionHistory = prev
                   (prev.ranked[9] !== digit ? 1 : 0),
               }
             : state.accuracy
-          const digits = [...state.digits, digit].slice(-count)
-          
-state = {
-  ...state,
-  quotes: [...state.quotes, tick.quote].slice(-count),
-  epochs: [...state.epochs, tick.epoch].slice(-count),
-  digits,
-  pipSize: pip,
-  tickCount: state.tickCount + 1,
-  lastDigitValue: digit,
-  prediction: predictNextDigit(digits),
-  predictionHistory,
-  accuracy,
-}
 
-            
-            
-            
-            
-            
-            
-            
-        
-            
-            
-          
+          const predictionHistory: PredictionRecord[] = prev
+            ? [
+                {
+                  predictedDigit: prev.digit,
+                  actualDigit: digit,
+                  confidence: prev.confidence,
+                  timestamp: tick.epoch,
+                  correct: prev.digit === digit,
+                  top3Correct: prev.ranked
+                    .slice(0, 3)
+                    .includes(digit),
+                },
+                ...state.predictionHistory,
+              ].slice(0, 20)
+            : state.predictionHistory
+
+          const digits = [...state.digits, digit].slice(-count)
+
+          state = {
+            ...state,
+            quotes: [...state.quotes, tick.quote].slice(-count),
+            epochs: [...state.epochs, tick.epoch].slice(-count),
+            digits,
+            pipSize: pip,
+            tickCount: state.tickCount + 1,
+            lastDigitValue: digit,
+            prediction: predictNextDigit(digits),
+            predictionHistory,
+            accuracy,
+          }
+
           setFeed(state)
         }
       },
     )
+
     return stop
-  }, [client, status, running, market?.symbol, count]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [
+    client,
+    status,
+    running,
+    market?.symbol,
+    count,
+  ]) // eslint-disable-line react-hooks/exhaustive-deps
 
   return feed
 }
 
-/** 0 = even side predicted, 1 = odd side predicted. */
-function sideOf(p: DigitPrediction) {
+/** Returns 0 for even and 1 for odd. */
+function sideOf(p: DigitPrediction): number {
   const even = p.distribution.reduce(
-    (acc, v, d) => (d % 2 === 0 ? acc + v : acc),
+    (acc, value, digit) =>
+      digit % 2 === 0 ? acc + value : acc,
     0,
   )
+
   return even >= 0.5 ? 0 : 1
 }
 
@@ -290,7 +315,7 @@ export interface ScanEntry {
   error?: string
 }
 
-/** Streams every given market at once; re-renders at most once per second. */
+/** Streams the selected markets and refreshes the scanner periodically. */
 export function useMarketScanner(
   client: DerivClient | null,
   status: ConnectionStatus,
@@ -298,16 +323,28 @@ export function useMarketScanner(
   count: number,
   running: boolean,
 ) {
-  const [entries, setEntries] = useState<Record<string, ScanEntry>>({})
-  const symbolsKey = markets.map((m) => m.symbol).join(',')
+  const [entries, setEntries] = useState<
+    Record<string, ScanEntry>
+  >({})
+
+  const symbolsKey = markets
+    .map((market) => market.symbol)
+    .join(',')
 
   useEffect(() => {
     if (!client || status !== 'open' || !running) return
+
     const store: Record<string, ScanEntry> = {}
     let dirty = false
+
     const stops = markets.map((market) =>
       client.subscribe(
-        { ticks_history: market.symbol, count, end: 'latest', style: 'ticks' },
+        {
+          ticks_history: market.symbol,
+          count,
+          end: 'latest',
+          style: 'ticks',
+        },
         (msg) => {
           if (msg.error) {
             store[market.symbol] = {
@@ -319,39 +356,65 @@ export function useMarketScanner(
             }
           } else if (msg.msg_type === 'history') {
             const history = msg.history as HistoryPayload
-            const pip = (msg.pip_size as number | undefined) ?? market.pipSize
+            const pip =
+              (msg.pip_size as number | undefined) ??
+              market.pipSize
+
             store[market.symbol] = {
               quotes: history.prices,
-              digits: history.prices.map((p) => lastDigit(p, pip)),
+              digits: history.prices.map((price) =>
+                lastDigit(price, pip),
+              ),
               pipSize: pip,
               updatedAt: Date.now(),
             }
           } else if (msg.msg_type === 'tick') {
             const tick = msg.tick as TickPayload
             const entry = store[market.symbol]
+
             if (!entry) return
+
             const pip = tick.pip_size ?? entry.pipSize
-            entry.quotes = [...entry.quotes, tick.quote].slice(-count)
-            entry.digits = [...entry.digits, lastDigit(tick.quote, pip)].slice(
-              -count,
-            )
+
+            entry.quotes = [
+              ...entry.quotes,
+              tick.quote,
+            ].slice(-count)
+
+            entry.digits = [
+              ...entry.digits,
+              lastDigit(tick.quote, pip),
+            ].slice(-count)
+
             entry.pipSize = pip
             entry.updatedAt = Date.now()
-          } else return
+          } else {
+            return
+          }
+
           dirty = true
         },
       ),
     )
+
     const timer = setInterval(() => {
       if (!dirty) return
+
       dirty = false
       setEntries({ ...store })
     }, 1000)
+
     return () => {
       clearInterval(timer)
-      stops.forEach((s) => s())
+      stops.forEach((stop) => stop())
     }
-  }, [client, status, running, symbolsKey, count]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [
+    client,
+    status,
+    running,
+    symbolsKey,
+    count,
+  ]) // eslint-disable-line react-hooks/exhaustive-deps
 
   return entries
 }
