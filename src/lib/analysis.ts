@@ -40,14 +40,20 @@ function validDigits(digits: number[]): number[] {
 
 function normalize(values: number[]): number[] {
   const sum = values.reduce((a, b) => a + b, 0)
-  return sum > 0 ? values.map((v) => v / sum) : values.map(() => 0.1)
+  return sum > 0
+    ? values.map((v) => v / sum)
+    : values.map(() => 0.1)
 }
 
 function countsOf(digits: number[]): number[] {
   const counts = Array(10).fill(0) as number[]
+
   for (const d of digits) {
-    if (Number.isInteger(d) && d >= 0 && d <= 9) counts[d]++
+    if (Number.isInteger(d) && d >= 0 && d <= 9) {
+      counts[d]++
+    }
   }
+
   return counts
 }
 
@@ -62,6 +68,7 @@ export function predictNextDigit(
   digitsInput: number[],
 ): DigitPrediction | null {
   const digits = validDigits(digitsInput)
+
   if (digits.length < 20) return null
 
   const recent = digits.slice(-50)
@@ -76,14 +83,21 @@ export function predictNextDigit(
 
   // Experimental transition estimate.
   const transitions = Array(10).fill(1) as number[]
+
   for (let i = 1; i < digits.length; i++) {
-    if (digits[i - 1] === last) transitions[digits[i]]++
+    if (digits[i - 1] === last) {
+      transitions[digits[i]]++
+    }
   }
+
   const transitionP = normalize(transitions)
 
   const distribution = normalize(
     DIGITS.map(
-      (d) => 0.4 * longP[d] + 0.3 * recentP[d] + 0.3 * transitionP[d],
+      (d) =>
+        0.4 * longP[d] +
+        0.3 * recentP[d] +
+        0.3 * transitionP[d],
     ),
   )
 
@@ -107,7 +121,10 @@ export function analyzeWindow(
   const digits = validDigits(digitsInput)
   const total = digits.length
   const counts = countsOf(digits)
-  const pct = counts.map((c) => total ? (c / total) * 100 : 0)
+
+  const pct = counts.map((c) =>
+    total ? (c / total) * 100 : 0,
+  )
 
   const evenCount = digits.filter((d) => d % 2 === 0).length
   const overCount = digits.filter((d) => d > barrier).length
@@ -117,20 +134,29 @@ export function analyzeWindow(
   let falls = 0
 
   for (let i = 1; i < quotes.length; i++) {
-    if (!Number.isFinite(quotes[i]) || !Number.isFinite(quotes[i - 1])) {
+    if (
+      !Number.isFinite(quotes[i]) ||
+      !Number.isFinite(quotes[i - 1])
+    ) {
       continue
     }
+
     if (quotes[i] > quotes[i - 1]) rises++
     else if (quotes[i] < quotes[i - 1]) falls++
   }
 
   const moves = rises + falls
   const gaps = getGaps(digits)
-  const ranked = [...DIGITS].sort((a, b) => counts[b] - counts[a])
+  const ranked = [...DIGITS].sort(
+    (a, b) => counts[b] - counts[a],
+  )
 
   const expected = total / 10
   const chi = total
-    ? counts.reduce((acc, c) => acc + (c - expected) ** 2 / expected, 0)
+    ? counts.reduce(
+        (acc, c) => acc + (c - expected) ** 2 / expected,
+        0,
+      )
     : 0
 
   const evenOddStreak = streak(digits, (d) =>
@@ -161,7 +187,7 @@ export function analyzeWindow(
 function streak<K extends string>(
   digits: number[],
   key: (d: number) => K,
-) {
+): { kind: K; length: number } | null {
   if (!digits.length) return null
 
   const kind = key(digits[digits.length - 1])
@@ -175,7 +201,9 @@ function streak<K extends string>(
   return { kind, length }
 }
 
-function moveStreak(quotes: number[]) {
+function moveStreak(
+  quotes: number[],
+): { kind: 'rise' | 'fall'; length: number } | null {
   let kind: 'rise' | 'fall' | null = null
   let length = 0
 
@@ -183,12 +211,18 @@ function moveStreak(quotes: number[]) {
     const current = quotes[i]
     const previous = quotes[i - 1]
 
-    if (!Number.isFinite(current) || !Number.isFinite(previous)) break
+    if (
+      !Number.isFinite(current) ||
+      !Number.isFinite(previous)
+    ) {
+      break
+    }
 
     const diff = current - previous
     if (diff === 0) break
 
     const nextKind = diff > 0 ? 'rise' : 'fall'
+
     if (kind !== null && nextKind !== kind) break
 
     kind = nextKind
@@ -205,7 +239,10 @@ export function outcomeOdds(
   const p = prediction.distribution
 
   const sum = (test: (d: number) => boolean) =>
-    DIGITS.filter(test).reduce((acc, d) => acc + p[d], 0) * 100
+    DIGITS.filter(test).reduce(
+      (acc, d) => acc + p[d],
+      0,
+    ) * 100
 
   return {
     even: sum((d) => d % 2 === 0),
@@ -243,7 +280,7 @@ export function matchesDiffers(
   const recent = digits.slice(-50)
   const gaps = getGaps(digits)
 
-  const rows = DIGITS.map((digit) => {
+  const rows: MatchDiffRow[] = DIGITS.map((digit) => {
     const count = digits.filter((d) => d === digit).length
     const recentCount = recent.filter((d) => d === digit).length
 
@@ -251,7 +288,9 @@ export function matchesDiffers(
       digit,
       matches: (count / total) * 100,
       recent: (recentCount / recent.length) * 100,
-      next: prediction ? prediction.distribution[digit] * 100 : 0,
+      next: prediction
+        ? prediction.distribution[digit] * 100
+        : 0,
       gap: gaps[digit],
     }
   })
@@ -259,7 +298,9 @@ export function matchesDiffers(
   const score = (row: MatchDiffRow) =>
     prediction ? row.next : row.matches
 
-  const sorted = [...rows].sort((a, b) => score(a) - score(b))
+  const sorted = [...rows].sort(
+    (a, b) => score(a) - score(b),
+  )
 
   return {
     rows,
