@@ -21,6 +21,8 @@ function Home() {
   const [symbol, setSymbol] = useState('R_100')
   const [windowSize, setWindowSize] = useState(WINDOW_SIZES[3])
   const [barrier, setBarrier] = useState(4)
+  const [matchesDigit, setMatchesDigit] = useState(4)
+const [matchesStake, setMatchesStake] = useState('0.35')
   const [running, setRunning] = useState(false)
   const [scanning, setScanning] = useState(false)
 
