@@ -57,4 +57,15 @@ describe("TickLens experimental digit model", () => {
       );
     }
   });
-});
+  it("rejects a model with invalid weights", () => {
+    const model = trainDigitModel(history);
+
+    const invalidModel: TrainedDigitModel = {
+      ...model,
+      weights: []
+    };
+
+    expect(
+      predictDigit(invalidModel, history)
+    ).toBeNull();
+  });});
