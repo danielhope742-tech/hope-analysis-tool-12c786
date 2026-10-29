@@ -1,30 +1,27 @@
-# TickLens — Synthetic Digit Analyzer
+# TickLens experimental trained digit model
 
-TickLens is a real-time analysis tool for Deriv synthetic markets. Pick a market, press **Start analysis**, and it loads the market's tick history and follows the live tick stream to show:
+This experiment is isolated from production. It does not change `src/lib/analysis.ts` or `src/hooks/use-deriv.ts`.
 
-- Last-digit probability for every digit 0–9, with the most/least frequent digits and the current digit highlighted
-- Even/Odd, Over/Under (any barrier 0–9) and Rise/Fall percentages, plus current streaks
-- A next-digit prediction with its probability, the top alternatives, and the implied Even/Odd, Over/Under and Matches/Differs odds
-- Live prediction accuracy compared with random baselines
-- A recent digit stream and how many ticks ago each digit last appeared
-- An **all synthetic markets** scanner that streams every market at once and ranks them by digit bias, prediction confidence, even/odd skew or over/under share
+## Contents
+- `model.ts`: multinomial logistic regression, fitted from a chronological digit sequence.
+- `evaluate.ts`: 70% training, 15% validation, 15% final test; includes uniform and smoothed training-frequency baselines.
+- `model.test.ts`: Vitest unit tests.
 
-Data comes directly from the [Deriv WebSocket API](https://api.deriv.com) (`ticks_history` with `subscribe: 1`). Tick data is public, so only an app ID is required — no API token. The app ID can be changed from the **Connection** button in the header.
+## How it works
+The model uses the previous 20 digits' frequencies, the most recent digit, and historical transitions following that digit. It trains with multiclass logistic regression and regularization. This is a small trained statistical model, not a large neural network.
 
-> Synthetic indices are driven by a random number generator. TickLens describes past ticks and gives statistical estimates; it does not guarantee outcomes.
+## Add these files
+On GitHub, make sure the branch selector shows `experiment/trained-digit-model-v1`. Create each path above and paste its matching content from the package. Do not edit production analyzer files.
 
-## Tech stack
-
-- TanStack Start + React 19, TypeScript
-- Tailwind CSS 4 and shadcn/ui components
-- Native browser WebSocket client for the Deriv API
-- Deployed on Netlify
-
-## Run locally
-
+## Test
+From the repository root:
 ```bash
-pnpm install
-netlify dev   # or: pnpm dev
+npm test -- experiments/digit-ai/model.test.ts
+npm run typecheck
 ```
+If the Vitest configuration only discovers tests under `src`, move the test file to `src/experiments/digit-ai/model.test.ts` and adjust imports to the colocated files.
 
-Then open the printed local URL. Tests for the statistics engine: `pnpm test`.
+## Evaluation rules
+Use raw digits from one market, in original tick order, using one consistent quote/pip digit-extraction method. Do not shuffle ticks. The final 15% is held out from fitting and should not be used to choose settings. Report sample size, exact accuracy, top-3 accuracy, and log loss alongside both baselines.
+
+The uniform baseline is 10% exact accuracy by chance under a uniform digit assumption; top-3 baseline is 30% under that same assumption. Synthetic-index digit probabilities and market behavior should not be assumed without testing. A single run cannot prove a lasting edge. This tool does not guarantee the next digit or profit and should not be connected to real-money execution based on this experiment alone.
