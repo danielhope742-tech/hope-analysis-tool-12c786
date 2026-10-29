@@ -675,7 +675,68 @@ function MatchesDiffersCard({
   pick,
   onPick,
   hasPrediction,
-}: {
+}:
+      {/* Live prediction history */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Activity className="size-5 text-primary" />
+            Live Prediction History
+          </CardTitle>
+          <CardDescription>
+            The last 20 predictions compared with the following live tick.
+            These results do not guarantee future accuracy.
+          </CardDescription>
+        </CardHeader>
+
+        <CardContent>
+          {feed.predictionHistory.length > 0 ? (
+            <div className="space-y-2">
+              <div className="grid grid-cols-5 gap-2 text-xs font-semibold text-muted-foreground">
+                <span>Time</span>
+                <span>Predicted</span>
+                <span>Actual</span>
+                <span>Confidence</span>
+                <span>Result</span>
+              </div>
+
+              {feed.predictionHistory.map((item, index) => (
+                <div
+                  key={`${item.timestamp}-${index}`}
+                  className="grid grid-cols-5 items-center gap-2 rounded-md border px-2 py-2 text-sm"
+                >
+                  <span className="text-xs text-muted-foreground">
+                    {new Date(item.timestamp * 1000).toLocaleTimeString()}
+                  </span>
+
+                  <span className="font-bold tabular">
+                    {item.predictedDigit}
+                  </span>
+
+                  <span className="font-bold tabular">
+                    {item.actualDigit}
+                  </span>
+
+                  <span className="tabular">
+                    {(item.confidence * 100).toFixed(1)}%
+                  </span>
+
+                  <Badge variant={item.correct ? 'default' : 'destructive'}>
+                    {item.correct ? 'HIT' : 'MISS'}
+                  </Badge>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="text-sm text-muted-foreground">
+              Waiting for the first live prediction result…
+            </p>
+          )}
+        </CardContent>
+      </Card>
+
+                            
+                            {
   md: ReturnType<typeof matchesDiffers>
   pick: number | null
   onPick: (d: number | null) => void
