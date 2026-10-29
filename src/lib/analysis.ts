@@ -260,4 +260,4 @@ export function matchesDiffers(
     bestDiffers: sorted[0].digit,
     bestMatches: sorted[sorted.length - 1].digit,
   }
-              }
+              
