@@ -3,7 +3,6 @@ import { useMemo, useState } from 'react'
 import {
   Activity,
   Brain,
-  Crosshair,
   Loader2,
   Play,
   Square,
@@ -39,14 +38,9 @@ import {
 import type { FeedState } from '@/hooks/use-deriv'
 import {
   analyzeWindow,
-  matchesDiffers,
-  outcomeOdds,
-  predictNextDigit,
+  analyzeContractEvidence,
 } from '@/lib/analysis'
-  
-  
-  
-
+import type { ContractType } from '@/lib/analysis'
 import type { Market } from '@/lib/markets'
 import { cn } from '@/lib/utils'
 
@@ -66,34 +60,41 @@ interface AnalyzerProps {
   feed: FeedState
 }
 
+const CONTRACTS: { value: ContractType; label: string }[] = [
+  { value: 'matches', label: 'Matches' },
+  { value: 'differs', label: 'Differs' },
+  { value: 'even', label: 'Even' },
+  { value: 'odd', label: 'Odd' },
+  { value: 'rise', label: 'Rise' },
+  { value: 'fall', label: 'Fall' },
+]
+
 export function Analyzer({
   markets,
   market,
   onMarketChange,
   windowSize,
   onWindowSizeChange,
-  barrier,
-  onBarrierChange,
   running,
   onToggle,
   connected,
   feed,
 }: AnalyzerProps) {
+  const [contract, setContract] = useState<ContractType>('matches')
+
+  // Barrier is fixed internally because the Analyzer no longer
+  // displays Over/Under controls. The Scanner keeps its own barrier.
   const stats = useMemo(
-    () => analyzeWindow(feed.digits, feed.quotes, barrier),
-    [feed.digits, feed.quotes, barrier],
+    () => analyzeWindow(feed.digits, feed.quotes, 4),
+    [feed.digits, feed.quotes],
   )
 
   const prediction = feed.prediction
-  const odds = prediction ? outcomeOdds(prediction, barrier) : null
 
-  const md = useMemo(
-    () => matchesDiffers(feed.digits, prediction),
-    [feed.digits, prediction],
+  const evidence = useMemo(
+    () => analyzeContractEvidence(contract, feed.digits, feed.quotes),
+    [contract, feed.digits, feed.quotes],
   )
-
-  // Null follows the suggested Differs digit automatically.
-  const [mdPick, setMdPick] = useState<number | null>(null)
 
   const groups = useMemo(() => {
     const map = new Map<string, Market[]>()
@@ -130,6 +131,16 @@ export function Analyzer({
       ? `Collecting evidence: ${acc.predictions}/100 predictions tested`
       : `Based on ${acc.predictions} live predictions. Past accuracy does not guarantee future results.`
 
+  const accuracy =
+    evidence.tests > 0
+      ? (evidence.hits / evidence.tests) * 100
+      : null
+
+  const percent = (value: number | null | undefined) =>
+    value === null || value === undefined
+      ? '—'
+      : `${(value * 100).toFixed(1)}%`
+
   return (
     <section
       className="space-y-4"
@@ -149,23 +160,40 @@ export function Analyzer({
                 <SelectValue placeholder="Choose a synthetic market" />
               </SelectTrigger>
 
-              <SelectContent
-                position="popper"
-                className="max-h-80"
-              >
+              <SelectContent position="popper" className="max-h-80">
                 {groups.map(([group, list]) => (
                   <SelectGroup key={group}>
                     <SelectLabel>{group}</SelectLabel>
 
                     {list.map((m) => (
-                      <SelectItem
-                        key={m.symbol}
-                        value={m.symbol}
-                      >
+                      <SelectItem key={m.symbol} value={m.symbol}>
                         {m.name}
                       </SelectItem>
                     ))}
                   </SelectGroup>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="min-w-40 flex-1 space-y-1.5">
+            <Label htmlFor="contract">Contract type</Label>
+
+            <Select
+              value={contract}
+              onValueChange={(value) =>
+                setContract(value as ContractType)
+              }
+            >
+              <SelectTrigger id="contract" className="w-full">
+                <SelectValue placeholder="Choose contract" />
+              </SelectTrigger>
+
+              <SelectContent position="popper">
+                {CONTRACTS.map((item) => (
+                  <SelectItem key={item.value} value={item.value}>
+                    {item.label}
+                  </SelectItem>
                 ))}
               </SelectContent>
             </Select>
@@ -186,29 +214,6 @@ export function Analyzer({
                 {WINDOW_SIZES.map((n) => (
                   <SelectItem key={n} value={String(n)}>
                     {n.toLocaleString()} ticks
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-
-          <div className="space-y-1.5">
-            <Label htmlFor="barrier">
-              Over/Under barrier
-            </Label>
-
-            <Select
-              value={String(barrier)}
-              onValueChange={(v) => onBarrierChange(Number(v))}
-            >
-              <SelectTrigger id="barrier" className="w-24">
-                <SelectValue />
-              </SelectTrigger>
-
-              <SelectContent position="popper">
-                {Array.from({ length: 10 }, (_, d) => (
-                  <SelectItem key={d} value={String(d)}>
-                    {d}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -317,278 +322,165 @@ export function Analyzer({
           </CardContent>
         </Card>
 
-        {/* Experimental prediction */}
+        {/* Selected contract prediction */}
         <Card className="relative overflow-hidden">
           <div className="pointer-events-none absolute -top-16 -right-16 size-48 rounded-full bg-primary/15 blur-3xl" />
 
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <Brain className="size-5 text-primary" />
-              Next digit prediction
+              Contract analysis
             </CardTitle>
 
             <CardDescription>
-              Experimental estimate using digit frequency,
-              recent observations and transitions.
+              Automatic analysis for your selected contract.
+              No target digit is required.
             </CardDescription>
           </CardHeader>
 
           <CardContent className="space-y-5">
-            {prediction ? (
-              <>
-                <div className="flex items-center gap-5">
-                  <div className="tabular flex size-24 shrink-0 items-center justify-center rounded-2xl border-2 border-primary bg-primary/10 text-6xl font-bold text-primary">
-                    {prediction.digit}
-                  </div>
+            <div className="space-y-2">
+              <Badge variant="outline">
+                {CONTRACTS.find((item) => item.value === contract)?.label}
+              </Badge>
 
-                  <div className="space-y-1">
-                    <div className="tabular text-3xl font-bold">
-                      {(prediction.confidence * 100).toFixed(1)}%
-                    </div>
+              <div className="text-3xl font-bold text-primary">
+                {evidence.selection || 'Waiting for data'}
+              </div>
 
-                    <div className="text-xs text-muted-foreground">
-                      Experimental model estimate · not verified probability
-                    </div>
+              <div className="text-sm text-muted-foreground">
+                Model estimate: {percent(evidence.probability)}
+              </div>
+            </div>
 
-                    <div className="flex flex-wrap gap-1.5 pt-1">
-                      {prediction.ranked
-                        .slice(1, 4)
-                        .map((d) => (
-                          <span
-                            key={d}
-                            className="tabular rounded-md bg-muted px-2 py-0.5 text-xs"
-                          >
-                            {d} · {(prediction.distribution[d] * 100).toFixed(1)}%
-                          </span>
-                        ))}
-                    </div>
-                  </div>
-                </div>
+            <div className="rounded-lg border bg-background/40 p-3">
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <span className="text-sm font-semibold">
+                  Historical test status
+                </span>
 
-                {odds && (
-                  <div className="grid grid-cols-2 gap-2 text-sm">
-                    <Odd
-                      label="Even"
-                      value={odds.even}
-                      best={odds.even >= odds.odd}
-                    />
-                    <Odd
-                      label="Odd"
-                      value={odds.odd}
-                      best={odds.odd > odds.even}
-                    />
-                    <Odd
-                      label={`Over ${barrier}`}
-                      value={odds.over}
-                      best={odds.over >= odds.under}
-                    />
-                    <Odd
-                      label={`Under ${barrier}`}
-                      value={odds.under}
-                      best={odds.under > odds.over}
-                    />
-                    <Odd
-                      label={`Matches ${prediction.digit}`}
-                      value={odds.matches}
-                    />
-                    <Odd
-                      label={`Differs ${prediction.digit}`}
-                      value={odds.differs}
-                      best
-                    />
-                  </div>
-                )}
+                <Badge
+                  variant={
+                    evidence.signal === 'CHECK'
+                      ? 'default'
+                      : 'secondary'
+                  }
+                >
+                  {evidence.signal}
+                </Badge>
+              </div>
 
-                {/* Live forecast evaluation */}
-                <div className="space-y-2 rounded-lg border bg-background/40 p-3">
-                  <div className="text-xs text-muted-foreground">
-                    {sampleMessage}
-                  </div>
-
-                  <div className="flex items-center gap-2 text-xs font-semibold tracking-wide text-muted-foreground uppercase">
-                    <Target className="size-3.5" />
-                    Live accuracy · {acc.predictions} calls
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-2 text-center sm:grid-cols-4 lg:grid-cols-2 xl:grid-cols-4">
-                    <AccuracyStat
-                      label="Exact digit"
-                      value={rate(acc.digitHits)}
-                      baseline={10}
-                    />
-                    <AccuracyStat
-                      label="Top 3"
-                      value={rate(acc.top3Hits)}
-                      baseline={30}
-                    />
-                    <AccuracyStat
-                      label="Even/Odd"
-                      value={rate(acc.sideHits)}
-                      baseline={50}
-                    />
-                    <AccuracyStat
-                      label="Differs"
-                      value={rate(acc.differsHits)}
-                      baseline={90}
-                    />
-                  </div>
-
-                  <p className="text-xs text-muted-foreground">
-                    Accuracy is calculated from observed live ticks.
-                    A small sample is unreliable; results do not
-                    guarantee future outcomes or profit.
-                  </p>
-                </div>
-              </>
-            ) : (
               <p className="text-sm text-muted-foreground">
-                A prediction appears once at least 20 ticks have been loaded.
+                {evidence.reason}
               </p>
-            )}
+            </div>
+
+            <div className="grid grid-cols-2 gap-2">
+              <EvidenceStat
+                label="Tests"
+                value={evidence.tests.toLocaleString()}
+              />
+
+              <EvidenceStat
+                label="Successful tests"
+                value={evidence.hits.toLocaleString()}
+              />
+
+              <EvidenceStat
+                label="Historical accuracy"
+                value={accuracy === null ? '—' : `${accuracy.toFixed(1)}%`}
+              />
+
+              <EvidenceStat
+                label="Reference baseline"
+                value={percent(evidence.baseline)}
+              />
+
+              <EvidenceStat
+                label="95% lower bound"
+                value={percent(evidence.lowerBound)}
+              />
+
+              <EvidenceStat
+                label="Edge demonstrated"
+                value={evidence.edgeDemonstrated ? 'Yes' : 'Not yet'}
+              />
+            </div>
+
+            <p className="text-xs text-muted-foreground">
+              CHECK means the historical test met the model's
+              statistical threshold. WAIT means the evidence is
+              insufficient. Neither predicts or guarantees the
+              next tick.
+            </p>
           </CardContent>
         </Card>
       </div>
 
-      {/* Matches / Differs */}
-      <MatchesDiffersCard
-        md={md}
-        pick={mdPick}
-        onPick={setMdPick}
-        hasPrediction={!!prediction}
-      />
-      
-      {/* Historical Backtesting Panel */}
+      {/* Live digit model accuracy */}
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <Target className="size-5 text-primary" />
-            Historical Backtesting
+            Live digit model accuracy
           </CardTitle>
+
           <CardDescription>
-            Tests the digit model against earlier ticks using
-            a rolling, one-step-ahead prediction. No trades are placed.
+            Separate digit-model tracking. These figures are not
+            the selected contract's historical test.
           </CardDescription>
         </CardHeader>
 
-        <CardContent>
-          {(() => {
-            const digits = feed.digits
-              .filter((d) => Number.isInteger(d) && d >= 0 && d <= 9)
+        <CardContent className="space-y-3">
+          <div className="text-xs text-muted-foreground">
+            {sampleMessage}
+          </div>
 
-            const testLimit = Math.min(500, Math.max(0, digits.length - 20))
-            const start = digits.length - testLimit
+          <div className="grid grid-cols-2 gap-3 text-center sm:grid-cols-4">
+            <AccuracyStat
+              label="Exact digit"
+              value={rate(acc.digitHits)}
+              baseline={10}
+            />
 
-            let exactHits = 0
-            let top3Hits = 0
-            let differsHits = 0
-            let tested = 0
+            <AccuracyStat
+              label="Top 3"
+              value={rate(acc.top3Hits)}
+              baseline={30}
+            />
 
-            for (let i = start; i < digits.length; i++) {
-              const pastDigits = digits.slice(0, i)
-              if (pastDigits.length < 20) continue
+            <AccuracyStat
+              label="Even/Odd"
+              value={rate(acc.sideHits)}
+              baseline={50}
+            />
 
-              const estimate = predictNextDigit(pastDigits)
-              if (!estimate) continue
+            <AccuracyStat
+              label="Differs"
+              value={rate(acc.differsHits)}
+              baseline={90}
+            />
+          </div>
 
-              const actual = digits[i]
-              tested++
-
-              if (estimate.digit === actual) exactHits++
-              if (estimate.ranked.slice(0, 3).includes(actual)) top3Hits++
-              if (estimate.digit !== actual) differsHits++
-            }
-
-            const exactRate = tested ? exactHits / tested * 100 : null
-            const top3Rate = tested ? top3Hits / tested * 100 : null
-            const differsRate = tested ? differsHits / tested * 100 : null
-
-            const status =
-              tested < 100
-                ? 'WAIT — collect at least 100 test predictions'
-                : exactRate !== null && exactRate > 10
-                  ? 'CHECK — compare with a larger holdout sample'
-                  : 'WAIT — no demonstrated exact-digit edge'
-
-            return (
-              <div className="space-y-4">
-                <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-                  <div className="rounded-lg border p-3">
-                    <div className="text-xs text-muted-foreground">
-                      Tests
-                    </div>
-                    <div className="text-2xl font-bold tabular">
-                      {tested}
-                    </div>
-                  </div>
-
-                  <div className="rounded-lg border p-3">
-                    <div className="text-xs text-muted-foreground">
-                      Exact hit rate
-                    </div>
-                    <div className="text-2xl font-bold tabular">
-                      {exactRate === null ? '—' : `${exactRate.toFixed(1)}%`}
-                    </div>
-                    <div className="text-xs text-muted-foreground">
-                      10% reference
-                    </div>
-                  </div>
-
-                  <div className="rounded-lg border p-3">
-                    <div className="text-xs text-muted-foreground">
-                      Top 3 hit rate
-                    </div>
-                    <div className="text-2xl font-bold tabular">
-                      {top3Rate === null ? '—' : `${top3Rate.toFixed(1)}%`}
-                    </div>
-                    <div className="text-xs text-muted-foreground">
-                      30% reference
-                    </div>
-                  </div>
-
-                  <div className="rounded-lg border p-3">
-                    <div className="text-xs text-muted-foreground">
-                      Differs rate
-                    </div>
-                    <div className="text-2xl font-bold tabular">
-                      {differsRate === null ? '—' : `${differsRate.toFixed(1)}%`}
-                    </div>
-                    <div className="text-xs text-muted-foreground">
-                      Reference depends on contract
-                    </div>
-                  </div>
-                </div>
-
-                <div className="rounded-lg border p-3">
-                  <div className="mb-1 text-sm font-semibold">
-                    Scanner status
-                  </div>
-                  <div className="text-sm">{status}</div>
-                </div>
-
-                <p className="text-xs text-muted-foreground">
-                  Uses up to 500 rolling one-step tests from the ticks
-                  currently loaded. The estimates use only ticks before
-                  each tested outcome. Results are historical, may be
-                  affected by repeated testing, and do not guarantee
-                  future performance or profit.
-                </p>
-              </div>
-            )
-          })()}
+          <p className="text-xs text-muted-foreground">
+            Accuracy is calculated from observed live ticks.
+            A small sample is unreliable; results do not guarantee
+            future outcomes or profit.
+          </p>
         </CardContent>
       </Card>
 
-      
       {/* Live Prediction History */}
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <Activity className="size-5 text-primary" />
-            Live Prediction History
+            Live Digit Prediction History
           </CardTitle>
+
           <CardDescription>
-            Compare each previous predicted digit with the
-            next actual live tick. Newest results appear first.
+            Compares previous digit predictions with actual live ticks.
+            This is digit-model history, not contract history.
           </CardDescription>
         </CardHeader>
 
@@ -596,36 +488,24 @@ export function Analyzer({
           {feed.predictionHistory.length > 0 ? (
             <>
               <div className="grid grid-cols-3 gap-2">
-                <div className="rounded-lg border p-3">
-                  <div className="text-xs text-muted-foreground">
-                    Tested
-                  </div>
-                  <div className="text-2xl font-bold tabular">
-                    {feed.predictionHistory.length}
-                  </div>
-                </div>
+                <EvidenceStat
+                  label="Tested"
+                  value={feed.predictionHistory.length.toString()}
+                />
 
-                <div className="rounded-lg border p-3">
-                  <div className="text-xs text-muted-foreground">
-                    Exact hits
-                  </div>
-                  <div className="text-2xl font-bold tabular">
-                    {feed.predictionHistory.filter(
-                      (item) => item.correct,
-                    ).length}
-                  </div>
-                </div>
+                <EvidenceStat
+                  label="Exact hits"
+                  value={feed.predictionHistory.filter(
+                    (item) => item.correct,
+                  ).length.toString()}
+                />
 
-                <div className="rounded-lg border p-3">
-                  <div className="text-xs text-muted-foreground">
-                    Top 3 hits
-                  </div>
-                  <div className="text-2xl font-bold tabular">
-                    {feed.predictionHistory.filter(
-                      (item) => item.top3Correct,
-                    ).length}
-                  </div>
-                </div>
+                <EvidenceStat
+                  label="Top 3 hits"
+                  value={feed.predictionHistory.filter(
+                    (item) => item.top3Correct,
+                  ).length.toString()}
+                />
               </div>
 
               <div className="overflow-x-auto">
@@ -667,13 +547,9 @@ export function Analyzer({
                         <td className="py-2">
                           <div className="flex flex-col gap-1">
                             <Badge
-                              variant={
-                                item.correct
-                                  ? "default"
-                                  : "destructive"
-                              }
+                              variant={item.correct ? 'default' : 'destructive'}
                             >
-                              {item.correct ? "Exact hit" : "Miss"}
+                              {item.correct ? 'Exact hit' : 'Miss'}
                             </Badge>
 
                             {item.top3Correct && !item.correct && (
@@ -688,40 +564,36 @@ export function Analyzer({
                   </tbody>
                 </table>
               </div>
-
-              <p className="text-xs text-muted-foreground">
-                This panel shows the recorded prediction history,
-                not a guarantee of future results. The estimate is
-                a model score, not a verified probability.
-              </p>
             </>
           ) : (
             <div className="rounded-lg border border-dashed p-6 text-center">
               <Activity className="mx-auto mb-2 size-8 text-muted-foreground" />
+
               <p className="font-semibold">
                 Waiting for prediction results
               </p>
+
               <p className="mt-1 text-sm text-muted-foreground">
                 Start analysis and wait for new live ticks.
-                History appears when a previous prediction can
-                be compared with an actual tick.
+                History appears when a prediction can be compared
+                with an actual tick.
               </p>
             </div>
           )}
         </CardContent>
       </Card>
 
-
-      {/* TickLens AI Digit Ranking Scanner */}
+      {/* Digit ranking */}
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <Brain className="size-5 text-primary" />
-            AI Digit Ranking Scanner
+            Supporting Digit Ranking
           </CardTitle>
+
           <CardDescription>
-            All digits ranked by experimental model estimates.
-            Higher rank does not guarantee the next result.
+            Supporting analysis from the digit model.
+            This ranking does not change your selected contract.
           </CardDescription>
         </CardHeader>
 
@@ -731,42 +603,38 @@ export function Analyzer({
               <div className="grid grid-cols-2 gap-3">
                 <div className="rounded-lg border border-primary/50 bg-primary/5 p-3">
                   <div className="text-xs text-muted-foreground">
-                    Match candidate
+                    Highest match estimate
                   </div>
+
                   <div className="text-3xl font-bold text-primary">
-                    {md?.bestMatches ?? prediction.ranked[0]}
+                    {prediction.ranked[0]}
                   </div>
+
                   <div className="text-sm">
-                    {(
-                      prediction.distribution[
-                        md?.bestMatches ?? prediction.ranked[0]
-                      ] * 100
-                    ).toFixed(1)}% estimated match score
+                    {(prediction.distribution[prediction.ranked[0]] * 100).toFixed(1)}%
+                    {' '}model score
                   </div>
                 </div>
 
                 <div className="rounded-lg border p-3">
                   <div className="text-xs text-muted-foreground">
-                    Differ candidate
+                    Lowest match estimate
                   </div>
+
                   <div className="text-3xl font-bold">
-                    {md?.bestDiffers ?? prediction.ranked[9]}
+                    {prediction.ranked[9]}
                   </div>
+
                   <div className="text-sm">
-                    {(
-                      100 -
-                      prediction.distribution[
-                        md?.bestDiffers ?? prediction.ranked[9]
-                      ] * 100
-                    ).toFixed(1)}% estimated differs score
+                    {(100 - prediction.distribution[prediction.ranked[9]] * 100).toFixed(1)}%
+                    {' '}complementary differs score
                   </div>
                 </div>
               </div>
 
               <div className="space-y-3">
                 {prediction.ranked.map((digit, index) => {
-                  const score =
-                    prediction.distribution[digit] * 100
+                  const score = prediction.distribution[digit] * 100
 
                   return (
                     <div key={digit} className="space-y-1">
@@ -775,12 +643,14 @@ export function Analyzer({
                           <span className="flex size-7 items-center justify-center rounded-md border font-bold">
                             {digit}
                           </span>
+
                           <span>
                             #{index + 1}
                             {index === 0 ? ' · Highest estimate' : ''}
                             {index === 9 ? ' · Lowest estimate' : ''}
                           </span>
                         </span>
+
                         <span className="font-semibold tabular">
                           {score.toFixed(1)}%
                         </span>
@@ -805,10 +675,9 @@ export function Analyzer({
               </div>
 
               <p className="text-xs text-muted-foreground">
-                These are model scores derived from past ticks, not
-                verified probabilities. Synthetic market digits may
-                remain unpredictable. Use this scanner for analysis,
-                not as a guarantee of profit.
+                Model scores are derived from past ticks, not verified
+                probabilities. Synthetic market digits may remain
+                unpredictable.
               </p>
             </>
           ) : (
@@ -824,6 +693,7 @@ export function Analyzer({
       <Card>
         <CardHeader>
           <CardTitle>Last digit distribution</CardTitle>
+
           <CardDescription>
             Share of each last digit over the last{' '}
             {stats.total.toLocaleString()} ticks. Green marks the
@@ -845,10 +715,11 @@ export function Analyzer({
       </Card>
 
       {/* Market summaries */}
-      <div className="grid gap-4 md:grid-cols-3">
+      <div className="grid gap-4 md:grid-cols-2">
         <Card>
           <CardHeader>
             <CardTitle className="text-base">Even / Odd</CardTitle>
+
             <CardDescription>
               {stats.evenOddStreak
                 ? `${stats.evenOddStreak.length}× ${stats.evenOddStreak.kind} in a row`
@@ -870,29 +741,8 @@ export function Analyzer({
 
         <Card>
           <CardHeader>
-            <CardTitle className="text-base">
-              Over / Under {barrier}
-            </CardTitle>
-            <CardDescription className="tabular">
-              Equal to {barrier}: {stats.equalBarrier.toFixed(1)}%
-            </CardDescription>
-          </CardHeader>
-
-          <CardContent>
-            <SplitBar
-              left={stats.over}
-              right={stats.under}
-              leftLabel={`Over ${barrier}`}
-              rightLabel={`Under ${barrier}`}
-              leftClass="bg-chart-1"
-              rightClass="bg-chart-3"
-            />
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
             <CardTitle className="text-base">Rise / Fall</CardTitle>
+
             <CardDescription>
               {stats.riseFallStreak
                 ? `${stats.riseFallStreak.length}× ${stats.riseFallStreak.kind} in a row`
@@ -917,8 +767,9 @@ export function Analyzer({
           <CardTitle className="text-base">
             Recent digit stream
           </CardTitle>
+
           <CardDescription>
-            Newest on the right. The numbers below show ticks since
+            Newest on the right. Numbers below show ticks since
             each digit last appeared.
           </CardDescription>
         </CardHeader>
@@ -957,6 +808,7 @@ export function Analyzer({
                   <div className="text-xs text-muted-foreground">
                     Digit {d}
                   </div>
+
                   <div
                     className={cn(
                       'tabular text-sm font-semibold',
@@ -975,31 +827,22 @@ export function Analyzer({
   )
 }
 
-function Odd({
+function EvidenceStat({
   label,
   value,
-  best,
 }: {
   label: string
-  value: number
-  best?: boolean
+  value: string
 }) {
   return (
-    <div
-      className={cn(
-        'flex items-center justify-between rounded-md border px-3 py-2',
-        best && 'border-primary/50 bg-primary/5',
-      )}
-    >
-      <span className="text-muted-foreground">{label}</span>
-      <span
-        className={cn(
-          'tabular font-semibold',
-          best && 'text-primary',
-        )}
-      >
-        {value.toFixed(1)}%
-      </span>
+    <div className="rounded-md border px-3 py-2">
+      <div className="text-xs text-muted-foreground">
+        {label}
+      </div>
+
+      <div className="tabular font-semibold">
+        {value}
+      </div>
     </div>
   )
 }
@@ -1033,214 +876,6 @@ function AccuracyStat({
         <span className="opacity-70">
           (reference {baseline}%)
         </span>
-      </div>
-    </div>
-  )
-}
-
-function MatchesDiffersCard({
-  md,
-  pick,
-  onPick,
-  hasPrediction,
-}: {
-  md: ReturnType<typeof matchesDiffers>
-  pick: number | null
-  onPick: (d: number | null) => void
-  hasPrediction: boolean
-}) {
-  const target = pick ?? md?.bestDiffers ?? 0
-  const row = md?.rows[target]
-
-  const matchP = row
-    ? hasPrediction
-      ? row.next
-      : row.matches
-    : 0
-
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <Crosshair className="size-5 text-primary" />
-          Matches / Differs
-        </CardTitle>
-
-        <CardDescription>
-          Matches wins if the next last digit equals your chosen digit;
-          Differs wins if it is any other digit. Auto follows the
-          model's lowest estimated match score. Estimates are not
-          verified probabilities.
-        </CardDescription>
-      </CardHeader>
-
-      <CardContent className="space-y-5">
-        <div
-          className="flex flex-wrap items-center gap-1.5"
-          role="group"
-          aria-label="Matches/Differs digit"
-        >
-          <Button
-            size="sm"
-            variant={pick === null ? 'secondary' : 'ghost'}
-            aria-pressed={pick === null}
-            onClick={() => onPick(null)}
-          >
-            Auto
-          </Button>
-
-          {Array.from({ length: 10 }, (_, d) => (
-            <Button
-              key={d}
-              size="icon-sm"
-              variant={target === d ? 'default' : 'outline'}
-              aria-pressed={pick === d}
-              aria-label={`Digit ${d}`}
-              className="tabular font-semibold"
-              onClick={() => onPick(d)}
-            >
-              {d}
-            </Button>
-          ))}
-        </div>
-
-        {md && row ? (
-          <>
-            <div className="grid gap-4 md:grid-cols-3">
-              <div className="space-y-3 md:col-span-2">
-                <SplitBar
-                  left={matchP}
-                  right={100 - matchP}
-                  leftLabel={`Matches ${target}`}
-                  rightLabel={`Differs ${target}`}
-                  leftClass="bg-chart-1"
-                  rightClass="bg-chart-3"
-                />
-
-                <div className="grid grid-cols-2 gap-2 text-sm sm:grid-cols-4">
-                  <MdStat
-                    label="In history"
-                    value={`${row.matches.toFixed(1)}%`}
-                  />
-                  <MdStat
-                    label="Last 50 ticks"
-                    value={`${row.recent.toFixed(1)}%`}
-                  />
-                  <MdStat
-                    label="Model estimate"
-                    value={hasPrediction ? `${row.next.toFixed(1)}%` : '—'}
-                  />
-                  <MdStat
-                    label="Last seen"
-                    value={`${row.gap} ticks ago`}
-                    warn={row.gap >= 20}
-                  />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-2 text-sm md:grid-cols-1">
-                <button
-                  type="button"
-                  onClick={() => onPick(md.bestDiffers)}
-                  className="rounded-lg border border-primary/50 bg-primary/5 px-3 py-2 text-left transition-colors hover:bg-primary/10 motion-reduce:transition-none"
-                >
-                  <div className="text-xs text-muted-foreground">
-                    Lowest model match score
-                  </div>
-                  <div className="tabular text-xl font-bold text-primary">
-                    {md.bestDiffers}{' '}
-                    <span className="text-sm font-semibold">
-                      {(100 - (
-                        hasPrediction
-                          ? md.rows[md.bestDiffers].next
-                          : md.rows[md.bestDiffers].matches
-                      )).toFixed(1)}%
-                    </span>
-                  </div>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => onPick(md.bestMatches)}
-                  className="rounded-lg border px-3 py-2 text-left transition-colors hover:bg-muted motion-reduce:transition-none"
-                >
-                  <div className="text-xs text-muted-foreground">
-                    Highest model match score
-                  </div>
-                  <div className="tabular text-xl font-bold">
-                    {md.bestMatches}{' '}
-                    <span className="text-sm font-semibold">
-                      {(hasPrediction
-                        ? md.rows[md.bestMatches].next
-                        : md.rows[md.bestMatches].matches
-                      ).toFixed(1)}%
-                    </span>
-                  </div>
-                </button>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-5 gap-2 sm:grid-cols-10">
-              {md.rows.map((r) => {
-                const p = hasPrediction ? r.next : r.matches
-
-                return (
-                  <button
-                    key={r.digit}
-                    type="button"
-                    onClick={() => onPick(r.digit)}
-                    aria-label={`Digit ${r.digit}: model match estimate ${p.toFixed(1)}%, differs complement ${(100 - p).toFixed(1)}%`}
-                    className={cn(
-                      'rounded-md border px-1 py-1.5 text-center transition-colors hover:bg-muted motion-reduce:transition-none',
-                      r.digit === target && 'border-primary bg-primary/10',
-                    )}
-                  >
-                    <div className="tabular text-sm font-bold">
-                      {r.digit}
-                    </div>
-                    <div className="tabular text-[11px] text-chart-1">
-                      M {p.toFixed(1)}
-                    </div>
-                    <div className="tabular text-[11px] text-chart-3">
-                      D {(100 - p).toFixed(1)}
-                    </div>
-                  </button>
-                )
-              })}
-            </div>
-          </>
-        ) : (
-          <p className="text-sm text-muted-foreground">
-            Start analysis to see historical frequencies and experimental
-            Matches/Differs estimates for each digit.
-          </p>
-        )}
-      </CardContent>
-    </Card>
-  )
-}
-
-function MdStat({
-  label,
-  value,
-  warn,
-}: {
-  label: string
-  value: string
-  warn?: boolean
-}) {
-  return (
-    <div className="rounded-md border px-3 py-2">
-      <div className="text-xs text-muted-foreground">
-        {label}
-      </div>
-      <div
-        className={cn(
-          'tabular font-semibold',
-          warn && 'text-warn',
-        )}
-      >
-        {value}
       </div>
     </div>
   )
