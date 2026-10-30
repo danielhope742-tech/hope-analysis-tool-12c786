@@ -101,7 +101,7 @@ export function Analyzer({
     marketSymbol: market?.symbol,
   }
 
-  // Store a fixed analysis snapshot every four seconds.
+  // Store a fixed analysis snapshot every six seconds.
   const [analysisSnapshot, setAnalysisSnapshot] = useState<{
     contract: ContractType
     marketSymbol: string
@@ -136,10 +136,10 @@ export function Analyzer({
       })
     }
 
-    // Run once immediately, then every four seconds.
+    // Run once immediately, then every six seconds.
     runAnalysis()
 
-    const timer = window.setInterval(runAnalysis, 4000)
+    const timer = window.setInterval(runAnalysis, 6000)
 
     return () => window.clearInterval(timer)
   }, [running])
@@ -410,8 +410,8 @@ export function Analyzer({
             {!evidence ? (
               <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
                 {running
-                  ? 'Waiting for the first 4-second analysis snapshot…'
-                  : 'Press Start analysis to begin the 4-second analysis cycle.'}
+                  ? 'Waiting for the first 6-second analysis snapshot…'
+                  : 'Press Start analysis to begin the 6-second analysis cycle.'}
               </div>
             ) : (
               <>
@@ -449,7 +449,7 @@ export function Analyzer({
                           analysisSnapshot.updatedAt,
                         ).toLocaleTimeString()
                       : '—'}
-                    {' · '}Refreshes every 4 seconds
+                    {' · '}Refreshes every 6 seconds
                   </div>
                 </div>
 
@@ -520,7 +520,7 @@ export function Analyzer({
                   statistical threshold. WAIT means the evidence is
                   insufficient. Neither predicts or guarantees the
                   next tick. STALE means new ticks arrived after this
-                  snapshot; wait for the next 4-second refresh.
+                  snapshot; wait for the next 6-second refresh.
                 </p>
               </>
             )}
@@ -992,4 +992,4 @@ function AccuracyStat({
       </div>
     </div>
   )
-  }
+}
