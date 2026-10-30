@@ -1,5 +1,4 @@
-
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   Activity,
   Brain,
@@ -82,8 +81,6 @@ export function Analyzer({
 }: AnalyzerProps) {
   const [contract, setContract] = useState<ContractType>('matches')
 
-  // Barrier is fixed internally because the Analyzer no longer
-  // displays Over/Under controls. The Scanner keeps its own barrier.
   const stats = useMemo(
     () => analyzeWindow(feed.digits, feed.quotes, 4),
     [feed.digits, feed.quotes],
@@ -91,9 +88,80 @@ export function Analyzer({
 
   const prediction = feed.prediction
 
-  const evidence = useMemo(
-    () => analyzeContractEvidence(contract, feed.digits, feed.quotes),
-    [contract, feed.digits, feed.quotes],
+  // Keep the latest live data available to the analysis timer.
+  const latestAnalysisRef = useRef({
+    feed,
+    contract,
+    marketSymbol: market?.symbol,
+  })
+
+  latestAnalysisRef.current = {
+    feed,
+    contract,
+    marketSymbol: market?.symbol,
+  }
+
+  // Store a fixed analysis snapshot every four seconds.
+  const [analysisSnapshot, setAnalysisSnapshot] = useState<{
+    contract: ContractType
+    marketSymbol: string
+    evidence: ReturnType<typeof analyzeContractEvidence>
+    tickCount: number
+    latestEpoch: number | undefined
+    updatedAt: number
+  } | null>(null)
+
+  useEffect(() => {
+    if (!running) return
+
+    const runAnalysis = () => {
+      const current = latestAnalysisRef.current
+
+      const latestEpoch =
+        current.feed.epochs[current.feed.epochs.length - 1]
+
+      if (!current.marketSymbol || !current.feed.digits.length) return
+
+      setAnalysisSnapshot({
+        contract: current.contract,
+        marketSymbol: current.marketSymbol,
+        evidence: analyzeContractEvidence(
+          current.contract,
+          current.feed.digits,
+          current.feed.quotes,
+        ),
+        tickCount: current.feed.tickCount,
+        latestEpoch,
+        updatedAt: Date.now(),
+      })
+    }
+
+    // Run once immediately, then every four seconds.
+    runAnalysis()
+
+    const timer = window.setInterval(runAnalysis, 4000)
+
+    return () => window.clearInterval(timer)
+  }, [running])
+
+  // Do not display an old snapshot for a different market or contract.
+  const snapshotMatches =
+    analysisSnapshot?.contract === contract &&
+    analysisSnapshot?.marketSymbol === market?.symbol
+
+  const evidence = snapshotMatches
+    ? analysisSnapshot.evidence
+    : null
+
+  // New incoming ticks make the displayed snapshot stale.
+  const signalIsStale = Boolean(
+    snapshotMatches &&
+    analysisSnapshot &&
+    (
+      feed.tickCount !== analysisSnapshot.tickCount ||
+      feed.epochs[feed.epochs.length - 1] !==
+        analysisSnapshot.latestEpoch
+    ),
   )
 
   const groups = useMemo(() => {
@@ -132,7 +200,7 @@ export function Analyzer({
       : `Based on ${acc.predictions} live predictions. Past accuracy does not guarantee future results.`
 
   const accuracy =
-    evidence.tests > 0
+    evidence && evidence.tests > 0
       ? (evidence.hits / evidence.tests) * 100
       : null
 
@@ -339,80 +407,123 @@ export function Analyzer({
           </CardHeader>
 
           <CardContent className="space-y-5">
-            <div className="space-y-2">
-              <Badge variant="outline">
-                {CONTRACTS.find((item) => item.value === contract)?.label}
-              </Badge>
-
-              <div className="text-3xl font-bold text-primary">
-                {evidence.selection || 'Waiting for data'}
+            {!evidence ? (
+              <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
+                {running
+                  ? 'Waiting for the first 4-second analysis snapshot…'
+                  : 'Press Start analysis to begin the 4-second analysis cycle.'}
               </div>
+            ) : (
+              <>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge variant="outline">
+                    {CONTRACTS.find(
+                      (item) => item.value === contract,
+                    )?.label}
+                  </Badge>
 
-              <div className="text-sm text-muted-foreground">
-                Model estimate: {percent(evidence.probability)}
-              </div>
-            </div>
+                  <Badge
+                    variant={
+                      signalIsStale ? 'destructive' : 'secondary'
+                    }
+                  >
+                    {signalIsStale
+                      ? 'STALE · new ticks received'
+                      : 'CURRENT SNAPSHOT'}
+                  </Badge>
+                </div>
 
-            <div className="rounded-lg border bg-background/40 p-3">
-              <div className="mb-2 flex items-center justify-between gap-2">
-                <span className="text-sm font-semibold">
-                  Historical test status
-                </span>
+                <div className="space-y-2">
+                  <div className="text-3xl font-bold text-primary">
+                    {evidence.selection || 'Waiting for data'}
+                  </div>
 
-                <Badge
-                  variant={
-                    evidence.signal === 'CHECK'
-                      ? 'default'
-                      : 'secondary'
-                  }
-                >
-                  {evidence.signal}
-                </Badge>
-              </div>
+                  <div className="text-sm text-muted-foreground">
+                    Model estimate: {percent(evidence.probability)}
+                  </div>
 
-              <p className="text-sm text-muted-foreground">
-                {evidence.reason}
-              </p>
-            </div>
+                  <div className="text-xs text-muted-foreground">
+                    Analysed:{' '}
+                    {analysisSnapshot
+                      ? new Date(
+                          analysisSnapshot.updatedAt,
+                        ).toLocaleTimeString()
+                      : '—'}
+                    {' · '}Refreshes every 4 seconds
+                  </div>
+                </div>
 
-            <div className="grid grid-cols-2 gap-2">
-              <EvidenceStat
-                label="Tests"
-                value={evidence.tests.toLocaleString()}
-              />
+                <div className="rounded-lg border bg-background/40 p-3">
+                  <div className="mb-2 flex items-center justify-between gap-2">
+                    <span className="text-sm font-semibold">
+                      Historical test status
+                    </span>
 
-              <EvidenceStat
-                label="Successful tests"
-                value={evidence.hits.toLocaleString()}
-              />
+                    <Badge
+                      variant={
+                        evidence.signal === 'CHECK'
+                          ? 'default'
+                          : 'secondary'
+                      }
+                    >
+                      {evidence.signal}
+                    </Badge>
+                  </div>
 
-              <EvidenceStat
-                label="Historical accuracy"
-                value={accuracy === null ? '—' : `${accuracy.toFixed(1)}%`}
-              />
+                  <p className="text-sm text-muted-foreground">
+                    {evidence.reason}
+                  </p>
+                </div>
 
-              <EvidenceStat
-                label="Reference baseline"
-                value={percent(evidence.baseline)}
-              />
+                <div className="grid grid-cols-2 gap-2">
+                  <EvidenceStat
+                    label="Tests"
+                    value={evidence.tests.toLocaleString()}
+                  />
 
-              <EvidenceStat
-                label="95% lower bound"
-                value={percent(evidence.lowerBound)}
-              />
+                  <EvidenceStat
+                    label="Successful tests"
+                    value={evidence.hits.toLocaleString()}
+                  />
 
-              <EvidenceStat
-                label="Edge demonstrated"
-                value={evidence.edgeDemonstrated ? 'Yes' : 'Not yet'}
-              />
-            </div>
+                  <EvidenceStat
+                    label="Historical accuracy"
+                    value={
+                      accuracy === null
+                        ? '—'
+                        : `${accuracy.toFixed(1)}%`
+                    }
+                  />
 
-            <p className="text-xs text-muted-foreground">
-              CHECK means the historical test met the model's
-              statistical threshold. WAIT means the evidence is
-              insufficient. Neither predicts or guarantees the
-              next tick.
-            </p>
+                  <EvidenceStat
+                    label="Reference baseline"
+                    value={percent(evidence.baseline)}
+                  />
+
+                  <EvidenceStat
+                    label="95% lower bound"
+                    value={percent(evidence.lowerBound)}
+                  />
+
+                  <EvidenceStat
+                    label="Edge demonstrated"
+                    value={
+                      evidence.edgeDemonstrated
+                        ? 'Yes'
+                        : 'Not yet'
+                    }
+                  />
+                </div>
+
+                <p className="text-xs text-muted-foreground">
+                  CHECK means the historical test met the model's
+                  statistical threshold. WAIT means the evidence is
+                  insufficient. Neither predicts or guarantees the
+                  next tick. STALE means new ticks arrived after this
+                  snapshot; wait for the next 4-second refresh.
+                </p>
+              </>
+            )}
           </CardContent>
         </Card>
       </div>
@@ -547,7 +658,9 @@ export function Analyzer({
                         <td className="py-2">
                           <div className="flex flex-col gap-1">
                             <Badge
-                              variant={item.correct ? 'default' : 'destructive'}
+                              variant={
+                                item.correct ? 'default' : 'destructive'
+                              }
                             >
                               {item.correct ? 'Exact hit' : 'Miss'}
                             </Badge>
@@ -879,4 +992,4 @@ function AccuracyStat({
       </div>
     </div>
   )
-}
+  }
