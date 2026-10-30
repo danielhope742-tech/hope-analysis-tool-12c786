@@ -1,7 +1,6 @@
 
- // TickLens digit analysis engine.
- // Descriptive statistics and experimental estimates only.
- // Past digit patterns do not guarantee future outcomes.
+// TickLens — Improved Synthetic Digit Analysis Engine
+// Statistical estimates only. No method can guarantee the next result.
 
 export interface DigitPrediction {
   digit: number
@@ -40,6 +39,7 @@ function validDigits(digits: number[]): number[] {
 
 function normalize(values: number[]): number[] {
   const sum = values.reduce((a, b) => a + b, 0)
+
   return sum > 0
     ? values.map((v) => v / sum)
     : values.map(() => 0.1)
@@ -48,9 +48,9 @@ function normalize(values: number[]): number[] {
 function countsOf(digits: number[]): number[] {
   const counts = Array(10).fill(0) as number[]
 
-  for (const d of digits) {
-    if (Number.isInteger(d) && d >= 0 && d <= 9) {
-      counts[d]++
+  for (const digit of digits) {
+    if (Number.isInteger(digit) && digit >= 0 && digit <= 9) {
+      counts[digit]++
     }
   }
 
@@ -58,12 +58,17 @@ function countsOf(digits: number[]): number[] {
 }
 
 function getGaps(digits: number[]): number[] {
-  return DIGITS.map((d) => {
-    const idx = digits.lastIndexOf(d)
-    return idx === -1 ? digits.length : digits.length - 1 - idx
+  return DIGITS.map((digit) => {
+    const index = digits.lastIndexOf(digit)
+
+    return index === -1
+      ? digits.length
+      : digits.length - 1 - index
   })
 }
 
+// Estimates the next digit using historical, recent,
+// and conditional transition frequencies.
 export function predictNextDigit(
   digitsInput: number[],
 ): DigitPrediction | null {
@@ -71,38 +76,80 @@ export function predictNextDigit(
 
   if (digits.length < 20) return null
 
-  const recent = digits.slice(-50)
   const last = digits[digits.length - 1]
 
-  const allCounts = countsOf(digits)
-  const recentCounts = countsOf(recent)
+  const recent = digits.slice(-100)
+  const medium = digits.slice(-500)
 
-  // Smoothed observed frequencies.
-  const longP = normalize(allCounts.map((c) => c + 1))
+  // Long-term distribution.
+  const longCounts = countsOf(digits)
+  const longP = normalize(longCounts.map((c) => c + 1))
+
+  // Medium-term distribution.
+  const mediumCounts = countsOf(medium)
+  const mediumP = normalize(mediumCounts.map((c) => c + 1))
+
+  // Recent distribution.
+  const recentCounts = countsOf(recent)
   const recentP = normalize(recentCounts.map((c) => c + 1))
 
-  // Experimental transition estimate.
+  // Conditional probability of a digit following the latest digit.
   const transitions = Array(10).fill(1) as number[]
+  let transitionSamples = 0
 
   for (let i = 1; i < digits.length; i++) {
     if (digits[i - 1] === last) {
       transitions[digits[i]]++
+      transitionSamples++
     }
   }
 
   const transitionP = normalize(transitions)
 
+  // Two-digit context: what followed the latest two digits?
+  const pairTransitions = Array(10).fill(1) as number[]
+  let pairSamples = 0
+
+  if (digits.length >= 3) {
+    const previous = digits[digits.length - 2]
+
+    for (let i = 2; i < digits.length; i++) {
+      if (
+        digits[i - 2] === previous &&
+        digits[i - 1] === last
+      ) {
+        pairTransitions[digits[i]]++
+        pairSamples++
+      }
+    }
+  }
+
+  const pairP = normalize(pairTransitions)
+
+  // Use pair transitions only when there is enough evidence.
+  const pairWeight = pairSamples >= 8 ? 0.15 : 0
+
+  const transitionWeight = transitionSamples >= 5 ? 0.25 : 0.10
+
+  const recentWeight = 0.30
+  const mediumWeight = 0.20
+  const longWeight =
+    1 - recentWeight - mediumWeight -
+    transitionWeight - pairWeight
+
   const distribution = normalize(
-    DIGITS.map(
-      (d) =>
-        0.4 * longP[d] +
-        0.3 * recentP[d] +
-        0.3 * transitionP[d],
+    DIGITS.map((digit) =>
+      longWeight * longP[digit] +
+      mediumWeight * mediumP[digit] +
+      recentWeight * recentP[digit] +
+      transitionWeight * transitionP[digit] +
+      pairWeight * pairP[digit],
     ),
   )
 
   const ranked = [...DIGITS].sort(
-    (a, b) => distribution[b] - distribution[a],
+    (a, b) =>
+      distribution[b] - distribution[a] || a - b,
   )
 
   return {
@@ -122,8 +169,8 @@ export function analyzeWindow(
   const total = digits.length
   const counts = countsOf(digits)
 
-  const pct = counts.map((c) =>
-    total ? (c / total) * 100 : 0,
+  const pct = counts.map((count) =>
+    total ? (count / total) * 100 : 0,
   )
 
   const evenCount = digits.filter((d) => d % 2 === 0).length
@@ -147,14 +194,17 @@ export function analyzeWindow(
 
   const moves = rises + falls
   const gaps = getGaps(digits)
+
   const ranked = [...DIGITS].sort(
-    (a, b) => counts[b] - counts[a],
+    (a, b) => counts[b] - counts[a] || a - b,
   )
 
   const expected = total / 10
+
   const chi = total
     ? counts.reduce(
-        (acc, c) => acc + (c - expected) ** 2 / expected,
+        (acc, count) =>
+          acc + (count - expected) ** 2 / expected,
         0,
       )
     : 0
@@ -218,10 +268,11 @@ function moveStreak(
       break
     }
 
-    const diff = current - previous
-    if (diff === 0) break
+    const difference = current - previous
 
-    const nextKind = diff > 0 ? 'rise' : 'fall'
+    if (difference === 0) break
+
+    const nextKind = difference > 0 ? 'rise' : 'fall'
 
     if (kind !== null && nextKind !== kind) break
 
@@ -238,9 +289,9 @@ export function outcomeOdds(
 ) {
   const p = prediction.distribution
 
-  const sum = (test: (d: number) => boolean) =>
+  const sum = (test: (digit: number) => boolean) =>
     DIGITS.filter(test).reduce(
-      (acc, d) => acc + p[d],
+      (acc, digit) => acc + p[digit],
       0,
     ) * 100
 
@@ -282,7 +333,10 @@ export function matchesDiffers(
 
   const rows: MatchDiffRow[] = DIGITS.map((digit) => {
     const count = digits.filter((d) => d === digit).length
-    const recentCount = recent.filter((d) => d === digit).length
+
+    const recentCount = recent.filter(
+      (d) => d === digit,
+    ).length
 
     return {
       digit,
