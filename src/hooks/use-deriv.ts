@@ -23,7 +23,15 @@ import {
   type Market,
 } from '@/lib/markets'
 
-/** Opens a socket while enabled and reconnects automatically. */
+import {
+  saveTick,
+  saveTicks,
+} from '@/lib/tick-storage'
+
+/**
+ * Opens a Deriv socket while enabled.
+ * Automatically disconnects when disabled or unmounted.
+ */
 export function useDerivConnection(
   settings: DerivSettings,
   enabled: boolean,
@@ -35,6 +43,7 @@ export function useDerivConnection(
   useEffect(() => {
     if (!enabled) {
       setStatus('idle')
+      setClient(null)
       return
     }
 
@@ -56,11 +65,15 @@ export function useDerivConnection(
       c.disconnect()
       setClient(null)
     }
-  }, [settings.appId, settings.endpoint, enabled]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [settings.appId, settings.endpoint, enabled])
 
   return { client, status, error }
 }
 
+/**
+ * Loads available synthetic markets from Deriv.
+ * Uses fallback markets if the request fails.
+ */
 export function useSyntheticMarkets(
   client: DerivClient | null,
   status: ConnectionStatus,
@@ -70,6 +83,8 @@ export function useSyntheticMarkets(
 
   useEffect(() => {
     if (!client || status !== 'open' || loaded.current) return
+
+    let active = true
 
     client
       .request<
@@ -82,6 +97,8 @@ export function useSyntheticMarkets(
         active_symbols: 'brief',
       })
       .then((res) => {
+        if (!active) return
+
         const list = marketsFromActiveSymbols(res.active_symbols)
 
         if (list.length) {
@@ -92,6 +109,10 @@ export function useSyntheticMarkets(
       .catch(() => {
         // Keep the fallback list.
       })
+
+    return () => {
+      active = false
+    }
   }, [client, status])
 
   return markets
@@ -153,7 +174,9 @@ function emptyFeed(pipSize: number): FeedState {
 }
 
 /**
- * Loads historical ticks, then follows the live tick stream.
+ * Loads historical ticks and follows the selected
+ * market's live tick stream.
+ *
  * No trades are placed by this hook.
  */
 export function useTickFeed(
@@ -167,13 +190,14 @@ export function useTickFeed(
     emptyFeed(market?.pipSize ?? 2),
   )
 
-  // Clear previous data when the selected market or window changes.
   useEffect(() => {
     setFeed(emptyFeed(market?.pipSize ?? 2))
-  }, [market?.symbol, count]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [market?.symbol, count])
 
   useEffect(() => {
     if (!client || status !== 'open' || !running || !market) return
+
+    let active = true
 
     let state: FeedState = {
       ...emptyFeed(market.pipSize),
@@ -190,20 +214,25 @@ export function useTickFeed(
         style: 'ticks',
       },
       (msg) => {
+        if (!active) return
+
         if (msg.error) {
           state = {
             ...state,
             error: msg.error,
             loading: false,
           }
+
           setFeed(state)
           return
         }
 
         if (msg.msg_type === 'history') {
           const history = msg.history as HistoryPayload
+
           const pip =
-            (msg.pip_size as number | undefined) ?? market.pipSize
+            (msg.pip_size as number | undefined) ??
+            market.pipSize
 
           const digits = history.prices.map((price) =>
             lastDigit(price, pip),
@@ -228,41 +257,50 @@ export function useTickFeed(
           const tick = msg.tick as TickPayload
           const pip = tick.pip_size ?? state.pipSize
           const digit = lastDigit(tick.quote, pip)
-          const prev = state.prediction
+          const previousPrediction = state.prediction
 
-          const accuracy: Accuracy = prev
+          const accuracy: Accuracy = previousPrediction
             ? {
                 predictions: state.accuracy.predictions + 1,
+
                 digitHits:
                   state.accuracy.digitHits +
-                  (prev.digit === digit ? 1 : 0),
+                  (previousPrediction.digit === digit ? 1 : 0),
+
                 top3Hits:
                   state.accuracy.top3Hits +
-                  (prev.ranked.slice(0, 3).includes(digit) ? 1 : 0),
+                  (
+                    previousPrediction.ranked
+                      .slice(0, 3)
+                      .includes(digit) ? 1 : 0
+                  ),
+
                 sideHits:
                   state.accuracy.sideHits +
-                  (sideOf(prev) === digit % 2 ? 1 : 0),
+                  (sideOf(previousPrediction) === digit % 2 ? 1 : 0),
+
                 differsHits:
                   state.accuracy.differsHits +
-                  (prev.ranked[9] !== digit ? 1 : 0),
+                  (previousPrediction.ranked[9] !== digit ? 1 : 0),
               }
             : state.accuracy
 
-          const predictionHistory: PredictionRecord[] = prev
-            ? [
-                {
-                  predictedDigit: prev.digit,
-                  actualDigit: digit,
-                  confidence: prev.confidence,
-                  timestamp: tick.epoch,
-                  correct: prev.digit === digit,
-                  top3Correct: prev.ranked
-                    .slice(0, 3)
-                    .includes(digit),
-                },
-                ...state.predictionHistory,
-              ].slice(0, 20)
-            : state.predictionHistory
+          const predictionHistory: PredictionRecord[] =
+            previousPrediction
+              ? [
+                  {
+                    predictedDigit: previousPrediction.digit,
+                    actualDigit: digit,
+                    confidence: previousPrediction.confidence,
+                    timestamp: tick.epoch,
+                    correct: previousPrediction.digit === digit,
+                    top3Correct: previousPrediction.ranked
+                      .slice(0, 3)
+                      .includes(digit),
+                  },
+                  ...state.predictionHistory,
+                ].slice(0, 20)
+              : state.predictionHistory
 
           const digits = [...state.digits, digit].slice(-count)
 
@@ -284,21 +322,24 @@ export function useTickFeed(
       },
     )
 
-    return stop
+    return () => {
+      active = false
+      stop()
+    }
   }, [
     client,
     status,
     running,
     market?.symbol,
     count,
-  ]) // eslint-disable-line react-hooks/exhaustive-deps
+  ])
 
   return feed
 }
 
 /** Returns 0 for even and 1 for odd. */
-function sideOf(p: DigitPrediction): number {
-  const even = p.distribution.reduce(
+function sideOf(prediction: DigitPrediction): number {
+  const even = prediction.distribution.reduce(
     (acc, value, digit) =>
       digit % 2 === 0 ? acc + value : acc,
     0,
@@ -315,7 +356,10 @@ export interface ScanEntry {
   error?: string
 }
 
-/** Streams the selected markets and refreshes the scanner periodically. */
+/**
+ * Streams selected markets and automatically saves
+ * their historical and live ticks into IndexedDB.
+ */
 export function useMarketScanner(
   client: DerivClient | null,
   status: ConnectionStatus,
@@ -334,6 +378,8 @@ export function useMarketScanner(
   useEffect(() => {
     if (!client || status !== 'open' || !running) return
 
+    let active = true
+
     const store: Record<string, ScanEntry> = {}
     let dirty = false
 
@@ -346,6 +392,8 @@ export function useMarketScanner(
           style: 'ticks',
         },
         (msg) => {
+          if (!active) return
+
           if (msg.error) {
             store[market.symbol] = {
               quotes: [],
@@ -354,27 +402,60 @@ export function useMarketScanner(
               updatedAt: Date.now(),
               error: msg.error.message,
             }
-          } else if (msg.msg_type === 'history') {
+
+            dirty = true
+            return
+          }
+
+          if (msg.msg_type === 'history') {
             const history = msg.history as HistoryPayload
+
             const pip =
               (msg.pip_size as number | undefined) ??
               market.pipSize
 
+            const digits = history.prices.map((price) =>
+              lastDigit(price, pip),
+            )
+
             store[market.symbol] = {
               quotes: history.prices,
-              digits: history.prices.map((price) =>
-                lastDigit(price, pip),
-              ),
+              digits,
               pipSize: pip,
               updatedAt: Date.now(),
             }
-          } else if (msg.msg_type === 'tick') {
+
+            // Save the historical ticks for this market.
+            const historicalTicks = history.prices.map(
+              (quote, index) => ({
+                quote,
+                digit: digits[index],
+                epoch: history.times[index],
+              }),
+            )
+
+            void saveTicks(
+              market.symbol,
+              historicalTicks,
+            ).catch((error) => {
+              console.error(
+                `TickLens history storage error (${market.symbol}):`,
+                error,
+              )
+            })
+
+            dirty = true
+            return
+          }
+
+          if (msg.msg_type === 'tick') {
             const tick = msg.tick as TickPayload
             const entry = store[market.symbol]
 
             if (!entry) return
 
             const pip = tick.pip_size ?? entry.pipSize
+            const digit = lastDigit(tick.quote, pip)
 
             entry.quotes = [
               ...entry.quotes,
@@ -383,28 +464,40 @@ export function useMarketScanner(
 
             entry.digits = [
               ...entry.digits,
-              lastDigit(tick.quote, pip),
+              digit,
             ].slice(-count)
 
             entry.pipSize = pip
             entry.updatedAt = Date.now()
-          } else {
-            return
-          }
 
-          dirty = true
+            // Save the incoming live tick.
+            void saveTick(market.symbol, {
+              quote: tick.quote,
+              digit,
+              epoch: tick.epoch,
+            }).catch((error) => {
+              console.error(
+                `TickLens live storage error (${market.symbol}):`,
+                error,
+              )
+            })
+
+            dirty = true
+          }
         },
       ),
     )
 
+    // Update the visible scanner once per second.
     const timer = setInterval(() => {
-      if (!dirty) return
+      if (!active || !dirty) return
 
       dirty = false
       setEntries({ ...store })
     }, 1000)
 
     return () => {
+      active = false
       clearInterval(timer)
       stops.forEach((stop) => stop())
     }
@@ -414,7 +507,7 @@ export function useMarketScanner(
     running,
     symbolsKey,
     count,
-  ]) // eslint-disable-line react-hooks/exhaustive-deps
+  ])
 
   return entries
 }
