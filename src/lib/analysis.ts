@@ -1,6 +1,14 @@
 
-// TickLens — Improved Synthetic Digit Analysis Engine
-// Statistical estimates only. No method can guarantee the next result.
+// TickLens — Evidence-Based Synthetic Market Analysis
+// Statistical estimates only. No prediction guarantees future outcomes.
+
+export type ContractType =
+  | 'matches'
+  | 'differs'
+  | 'even'
+  | 'odd'
+  | 'rise'
+  | 'fall'
 
 export interface DigitPrediction {
   digit: number
@@ -29,7 +37,31 @@ export interface WindowStats {
   prediction: DigitPrediction | null
 }
 
+export interface MovementPrediction {
+  direction: 'rise' | 'fall'
+  confidence: number
+  riseProbability: number
+  fallProbability: number
+}
+
+export interface ContractEvidence {
+  contract: ContractType
+  selection: string
+  probability: number
+  tests: number
+  hits: number
+  accuracy: number | null
+  baseline: number
+  lowerBound: number | null
+  edgeDemonstrated: boolean
+  signal: 'CHECK' | 'WAIT'
+  reason: string
+}
+
 const DIGITS = Array.from({ length: 10 }, (_, i) => i)
+
+const MIN_TESTS = 100
+const MAX_BACKTEST_TESTS = 500
 
 function validDigits(digits: number[]): number[] {
   return digits.filter(
@@ -67,8 +99,8 @@ function getGaps(digits: number[]): number[] {
   })
 }
 
-// Estimates the next digit using historical, recent,
-// and conditional transition frequencies.
+// Estimate the next digit from historical frequencies
+// and conditional transitions.
 export function predictNextDigit(
   digitsInput: number[],
 ): DigitPrediction | null {
@@ -81,19 +113,15 @@ export function predictNextDigit(
   const recent = digits.slice(-100)
   const medium = digits.slice(-500)
 
-  // Long-term distribution.
   const longCounts = countsOf(digits)
   const longP = normalize(longCounts.map((c) => c + 1))
 
-  // Medium-term distribution.
   const mediumCounts = countsOf(medium)
   const mediumP = normalize(mediumCounts.map((c) => c + 1))
 
-  // Recent distribution.
   const recentCounts = countsOf(recent)
   const recentP = normalize(recentCounts.map((c) => c + 1))
 
-  // Conditional probability of a digit following the latest digit.
   const transitions = Array(10).fill(1) as number[]
   let transitionSamples = 0
 
@@ -106,7 +134,6 @@ export function predictNextDigit(
 
   const transitionP = normalize(transitions)
 
-  // Two-digit context: what followed the latest two digits?
   const pairTransitions = Array(10).fill(1) as number[]
   let pairSamples = 0
 
@@ -125,14 +152,11 @@ export function predictNextDigit(
   }
 
   const pairP = normalize(pairTransitions)
-
-  // Use pair transitions only when there is enough evidence.
   const pairWeight = pairSamples >= 8 ? 0.15 : 0
-
   const transitionWeight = transitionSamples >= 5 ? 0.25 : 0.10
-
   const recentWeight = 0.30
   const mediumWeight = 0.20
+
   const longWeight =
     1 - recentWeight - mediumWeight -
     transitionWeight - pairWeight
@@ -157,6 +181,71 @@ export function predictNextDigit(
     confidence: distribution[ranked[0]],
     distribution,
     ranked,
+  }
+}
+
+// Estimate the next price movement from past price movements.
+// This is a statistical estimate, not a deterministic forecast.
+export function predictNextMovement(
+  quotesInput: number[],
+): MovementPrediction | null {
+  const quotes = quotesInput.filter(Number.isFinite)
+
+  if (quotes.length < 21) return null
+
+  const moves: Array<'rise' | 'fall'> = []
+
+  for (let i = 1; i < quotes.length; i++) {
+    if (quotes[i] > quotes[i - 1]) {
+      moves.push('rise')
+    } else if (quotes[i] < quotes[i - 1]) {
+      moves.push('fall')
+    }
+  }
+
+  if (moves.length < 20) return null
+
+  const recent = moves.slice(-100)
+
+  const riseCount = recent.filter((m) => m === 'rise').length
+  const fallCount = recent.length - riseCount
+
+  // Laplace smoothing prevents zero-probability estimates.
+  const riseBase = (riseCount + 1) / (recent.length + 2)
+
+  const lastMove = moves[moves.length - 1]
+  const transitionCounts = { rise: 1, fall: 1 }
+
+  let transitionSamples = 0
+
+  for (let i = 1; i < moves.length; i++) {
+    if (moves[i - 1] === lastMove) {
+      transitionCounts[moves[i]]++
+      transitionSamples++
+    }
+  }
+
+  const transitionTotal =
+    transitionCounts.rise + transitionCounts.fall
+
+  const transitionRise =
+    transitionCounts.rise / transitionTotal
+
+  const transitionWeight =
+    transitionSamples >= 10 ? 0.25 : 0
+
+  const riseProbability =
+    (1 - transitionWeight) * riseBase +
+    transitionWeight * transitionRise
+
+  const fallProbability = 1 - riseProbability
+
+  return {
+    direction:
+      riseProbability >= fallProbability ? 'rise' : 'fall',
+    confidence: Math.max(riseProbability, fallProbability),
+    riseProbability,
+    fallProbability,
   }
 }
 
@@ -360,5 +449,229 @@ export function matchesDiffers(
     rows,
     bestDiffers: sorted[0].digit,
     bestMatches: sorted[sorted.length - 1].digit,
+  }
+}
+
+// Wilson lower confidence bound.
+// A signal must beat its baseline even at this conservative bound.
+function wilsonLowerBound(
+  hits: number,
+  tests: number,
+): number | null {
+  if (tests <= 0) return null
+
+  const z = 1.96
+  const p = hits / tests
+  const z2 = z * z
+
+  const denominator = 1 + z2 / tests
+
+  const centre = p + z2 / (2 * tests)
+
+  const margin =
+    z *
+    Math.sqrt(
+      (p * (1 - p)) / tests +
+      z2 / (4 * tests * tests),
+    )
+
+  return (centre - margin) / denominator
+}
+
+// Test the chosen contract using rolling one-step-ahead predictions.
+// Each test uses only observations before its actual outcome.
+export function backtestContract(
+  contract: ContractType,
+  digitsInput: number[],
+  quotesInput: number[],
+): ContractEvidence {
+  const digits = validDigits(digitsInput)
+  const quotes = quotesInput.filter(Number.isFinite)
+
+  const isMovement =
+    contract === 'rise' || contract === 'fall'
+
+  const length = isMovement
+    ? quotes.length
+    : digits.length
+
+  const firstTest = Math.max(20, length - MAX_BACKTEST_TESTS)
+
+  let tests = 0
+  let hits = 0
+
+  for (let i = firstTest; i < length; i++) {
+    if (isMovement) {
+      const pastQuotes = quotes.slice(0, i)
+      const prediction = predictNextMovement(pastQuotes)
+
+      if (!prediction) continue
+
+      const actual =
+        quotes[i] > quotes[i - 1]
+          ? 'rise'
+          : quotes[i] < quotes[i - 1]
+            ? 'fall'
+            : null
+
+      if (!actual) continue
+
+      tests++
+
+      if (prediction.direction === actual) {
+        hits++
+      }
+    } else {
+      const pastDigits = digits.slice(0, i)
+      const prediction = predictNextDigit(pastDigits)
+
+      if (!prediction) continue
+
+      const actual = digits[i]
+      let predictedOutcome = false
+
+      switch (contract) {
+        case 'matches':
+          predictedOutcome = actual === prediction.ranked[0]
+          break
+        case 'differs':
+          predictedOutcome = actual !== prediction.ranked[9]
+          break
+        case 'even':
+          predictedOutcome = actual % 2 === 0
+          break
+        case 'odd':
+          predictedOutcome = actual % 2 === 1
+          break
+      }
+
+      tests++
+
+      if (predictedOutcome) hits++
+    }
+  }
+
+  const baseline =
+    contract === 'matches'
+      ? 10
+      : contract === 'differs'
+        ? 90
+        : 50
+
+  const accuracy = tests > 0
+    ? (hits / tests) * 100
+    : null
+
+  const lower = wilsonLowerBound(hits, tests)
+
+  const edgeDemonstrated =
+    tests >= MIN_TESTS &&
+    lower !== null &&
+    lower * 100 > baseline
+
+  return {
+    contract,
+    selection:
+      contract === 'matches'
+        ? 'Highest estimated digit'
+        : contract === 'differs'
+          ? 'Lowest estimated digit'
+          : contract === 'even'
+            ? 'Even'
+            : contract === 'odd'
+              ? 'Odd'
+              : contract === 'rise'
+                ? 'Rise'
+                : 'Fall',
+    probability: 0,
+    tests,
+    hits,
+    accuracy,
+    baseline,
+    lowerBound: lower === null ? null : lower * 100,
+    edgeDemonstrated,
+    signal: edgeDemonstrated ? 'CHECK' : 'WAIT',
+    reason:
+      tests < MIN_TESTS
+        ? `Only ${tests} valid tests. At least ${MIN_TESTS} are required.`
+        : edgeDemonstrated
+          ? 'The conservative historical accuracy estimate exceeded the reference baseline. This does not guarantee the next result.'
+          : 'The historical tests have not demonstrated an edge above the reference baseline.',
+  }
+}
+
+// Current contract estimate plus its historical evidence.
+export function analyzeContractEvidence(
+  contract: ContractType,
+  digitsInput: number[],
+  quotesInput: number[],
+): ContractEvidence {
+  const digits = validDigits(digitsInput)
+  const prediction = predictNextDigit(digits)
+  const movement = predictNextMovement(quotesInput)
+
+  const evidence = backtestContract(
+    contract,
+    digits,
+    quotesInput,
+  )
+
+  let probability = 0
+  let selection = evidence.selection
+
+  if (contract === 'matches' && prediction) {
+    probability =
+      prediction.distribution[prediction.ranked[0]] * 100
+    selection = `Digit ${prediction.ranked[0]}`
+  }
+
+  if (contract === 'differs' && prediction) {
+    probability =
+      (1 - prediction.distribution[prediction.ranked[9]]) * 100
+    selection = `Differs ${prediction.ranked[9]}`
+  }
+
+  if (contract === 'even' && prediction) {
+    probability =
+      prediction.distribution.reduce(
+        (sum, p, digit) =>
+          sum + (digit % 2 === 0 ? p : 0),
+        0,
+      ) * 100
+  }
+
+  if (contract === 'odd' && prediction) {
+    probability =
+      prediction.distribution.reduce(
+        (sum, p, digit) =>
+          sum + (digit % 2 === 1 ? p : 0),
+        0,
+      ) * 100
+  }
+
+  if (contract === 'rise' && movement) {
+    probability = movement.riseProbability * 100
+  }
+
+  if (contract === 'fall' && movement) {
+    probability = movement.fallProbability * 100
+  }
+
+  const hasEnoughCurrentData =
+    contract === 'rise' || contract === 'fall'
+      ? movement !== null
+      : prediction !== null
+
+  return {
+    ...evidence,
+    selection,
+    probability,
+    signal:
+      evidence.edgeDemonstrated && hasEnoughCurrentData
+        ? 'CHECK'
+        : 'WAIT',
+    reason: !hasEnoughCurrentData
+      ? 'Not enough current market data to calculate this contract.'
+      : evidence.reason,
   }
 }
