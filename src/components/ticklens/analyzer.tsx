@@ -57,6 +57,8 @@ interface AnalyzerProps {
   onToggle: () => void
   connected: boolean
   feed: FeedState
+  contract: ContractType
+  onContractChange: (contract: ContractType) => void
 }
 
 const CONTRACTS: { value: ContractType; label: string }[] = [
@@ -78,9 +80,9 @@ export function Analyzer({
   onToggle,
   connected,
   feed,
+  contract,
+  onContractChange,
 }: AnalyzerProps) {
-  const [contract, setContract] = useState<ContractType>('matches')
-
   const stats = useMemo(
     () => analyzeWindow(feed.digits, feed.quotes, 4),
     [feed.digits, feed.quotes],
@@ -88,7 +90,6 @@ export function Analyzer({
 
   const prediction = feed.prediction
 
-  // Keep the latest live data available to the analysis timer.
   const latestAnalysisRef = useRef({
     feed,
     contract,
@@ -101,7 +102,6 @@ export function Analyzer({
     marketSymbol: market?.symbol,
   }
 
-  // Store a fixed analysis snapshot every six seconds.
   const [analysisSnapshot, setAnalysisSnapshot] = useState<{
     contract: ContractType
     marketSymbol: string
@@ -116,7 +116,6 @@ export function Analyzer({
 
     const runAnalysis = () => {
       const current = latestAnalysisRef.current
-
       const latestEpoch =
         current.feed.epochs[current.feed.epochs.length - 1]
 
@@ -136,7 +135,6 @@ export function Analyzer({
       })
     }
 
-    // Run once immediately, then every six seconds.
     runAnalysis()
 
     const timer = window.setInterval(runAnalysis, 6000)
@@ -144,7 +142,6 @@ export function Analyzer({
     return () => window.clearInterval(timer)
   }, [running])
 
-  // Do not display an old snapshot for a different market or contract.
   const snapshotMatches =
     analysisSnapshot?.contract === contract &&
     analysisSnapshot?.marketSymbol === market?.symbol
@@ -153,7 +150,6 @@ export function Analyzer({
     ? analysisSnapshot.evidence
     : null
 
-  // New incoming ticks make the displayed snapshot stale.
   const signalIsStale = Boolean(
     snapshotMatches &&
     analysisSnapshot &&
@@ -214,7 +210,6 @@ export function Analyzer({
       className="space-y-4"
       aria-labelledby="analyzer-title"
     >
-      {/* Controls */}
       <Card className="gap-0 py-0">
         <CardContent className="flex flex-wrap items-end gap-4 p-4">
           <div className="min-w-56 flex-1 space-y-1.5">
@@ -250,7 +245,7 @@ export function Analyzer({
             <Select
               value={contract}
               onValueChange={(value) =>
-                setContract(value as ContractType)
+                onContractChange(value as ContractType)
               }
             >
               <SelectTrigger id="contract" className="w-full">
@@ -302,7 +297,6 @@ export function Analyzer({
         </CardContent>
       </Card>
 
-      {/* Connection errors */}
       {feed.error && (
         <div className="rounded-lg border border-destructive/50 bg-destructive/10 px-4 py-3 text-sm">
           <span className="font-semibold">
@@ -313,7 +307,6 @@ export function Analyzer({
       )}
 
       <div className="grid gap-4 lg:grid-cols-3">
-        {/* Live price and chart */}
         <Card className="lg:col-span-2">
           <CardHeader>
             <CardDescription className="flex items-center gap-2">
@@ -390,7 +383,6 @@ export function Analyzer({
           </CardContent>
         </Card>
 
-        {/* Selected contract prediction */}
         <Card className="relative overflow-hidden">
           <div className="pointer-events-none absolute -top-16 -right-16 size-48 rounded-full bg-primary/15 blur-3xl" />
 
@@ -528,7 +520,6 @@ export function Analyzer({
         </Card>
       </div>
 
-      {/* Live digit model accuracy */}
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
@@ -581,7 +572,6 @@ export function Analyzer({
         </CardContent>
       </Card>
 
-      {/* Live Prediction History */}
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
@@ -696,7 +686,6 @@ export function Analyzer({
         </CardContent>
       </Card>
 
-      {/* Digit ranking */}
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
@@ -802,7 +791,6 @@ export function Analyzer({
         </CardContent>
       </Card>
 
-      {/* Digit distribution */}
       <Card>
         <CardHeader>
           <CardTitle>Last digit distribution</CardTitle>
@@ -827,7 +815,6 @@ export function Analyzer({
         </CardContent>
       </Card>
 
-      {/* Market summaries */}
       <div className="grid gap-4 md:grid-cols-2">
         <Card>
           <CardHeader>
@@ -874,7 +861,6 @@ export function Analyzer({
         </Card>
       </div>
 
-      {/* Recent digit stream */}
       <Card>
         <CardHeader>
           <CardTitle className="text-base">
@@ -992,4 +978,4 @@ function AccuracyStat({
       </div>
     </div>
   )
-}
+    }
