@@ -29,10 +29,6 @@ import {
   saveTicks,
 } from '@/lib/tick-storage'
 
-/**
- * Opens a Deriv socket while enabled.
- * Automatically disconnects when disabled or unmounted.
- */
 export function useDerivConnection(
   settings: DerivSettings,
   enabled: boolean,
@@ -71,10 +67,6 @@ export function useDerivConnection(
   return { client, status, error }
 }
 
-/**
- * Loads available synthetic markets from Deriv.
- * Uses fallback markets if the request fails.
- */
 export function useSyntheticMarkets(
   client: DerivClient | null,
   status: ConnectionStatus,
@@ -108,7 +100,7 @@ export function useSyntheticMarkets(
         }
       })
       .catch(() => {
-        // Keep the fallback list.
+        // Keep fallback markets if the request fails.
       })
 
     return () => {
@@ -174,12 +166,6 @@ function emptyFeed(pipSize: number): FeedState {
   }
 }
 
-/**
- * Loads historical ticks and follows the selected
- * market's live tick stream.
- *
- * No trades are placed by this hook.
- */
 export function useTickFeed(
   client: DerivClient | null,
   status: ConnectionStatus,
@@ -263,11 +249,9 @@ export function useTickFeed(
           const accuracy: Accuracy = previousPrediction
             ? {
                 predictions: state.accuracy.predictions + 1,
-
                 digitHits:
                   state.accuracy.digitHits +
                   (previousPrediction.digit === digit ? 1 : 0),
-
                 top3Hits:
                   state.accuracy.top3Hits +
                   (
@@ -275,11 +259,9 @@ export function useTickFeed(
                       .slice(0, 3)
                       .includes(digit) ? 1 : 0
                   ),
-
                 sideHits:
                   state.accuracy.sideHits +
                   (sideOf(previousPrediction) === digit % 2 ? 1 : 0),
-
                 differsHits:
                   state.accuracy.differsHits +
                   (previousPrediction.ranked[9] !== digit ? 1 : 0),
@@ -338,7 +320,6 @@ export function useTickFeed(
   return feed
 }
 
-/** Returns 0 for even and 1 for odd. */
 function sideOf(prediction: DigitPrediction): number {
   const even = prediction.distribution.reduce(
     (acc, value, digit) =>
@@ -358,12 +339,6 @@ export interface ScanEntry {
   error?: string
 }
 
-/**
- * Streams selected markets and automatically saves
- * their historical and live ticks into IndexedDB.
- *
- * Also loads previously saved market history.
- */
 export function useMarketScanner(
   client: DerivClient | null,
   status: ConnectionStatus,
@@ -387,9 +362,11 @@ export function useMarketScanner(
     const store: Record<string, ScanEntry> = {}
     let dirty = false
 
+    // Load a larger historical sample for faster initial collection.
+    // Keep the request capped to avoid oversized history requests.
     const historyLimit = Math.min(
-      10_000,
-      Math.max(count, 2_000),
+      5000,
+      Math.max(count, 2000),
     )
 
     function mergeTicks(
@@ -443,7 +420,7 @@ export function useMarketScanner(
       dirty = true
     }
 
-    // Load previously saved ticks for every market.
+    // Restore previously collected ticks.
     for (const market of markets) {
       void getTicks(market.symbol, historyLimit)
         .then((saved) => {
@@ -467,11 +444,12 @@ export function useMarketScanner(
         })
     }
 
+    // Subscribe to a larger initial history sample.
     const stops = markets.map((market) =>
       client.subscribe(
         {
           ticks_history: market.symbol,
-          count,
+          count: historyLimit,
           end: 'latest',
           style: 'ticks',
         },
@@ -542,6 +520,7 @@ export function useMarketScanner(
               pip,
             )
 
+            // Save each incoming live tick immediately.
             void saveTick(
               market.symbol,
               incoming,
@@ -556,12 +535,13 @@ export function useMarketScanner(
       ),
     )
 
+    // Update the visible collection progress more frequently.
     const timer = setInterval(() => {
       if (!active || !dirty) return
 
       dirty = false
       setEntries({ ...store })
-    }, 1000)
+    }, 500)
 
     return () => {
       active = false
