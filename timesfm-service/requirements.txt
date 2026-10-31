@@ -1,0 +1,4 @@
+timesfm[torch]
+fastapi
+uvicorn[standard]
+numpy
