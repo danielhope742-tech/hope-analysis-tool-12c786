@@ -1,4 +1,3 @@
-
 import { useEffect, useMemo, useState } from 'react'
 import {
   ArrowRight,
@@ -29,7 +28,12 @@ import {
 } from '@/components/ui/table'
 
 import type { ScanEntry } from '@/hooks/use-deriv'
-import { analyzeWindow, matchesDiffers } from '@/lib/analysis'
+import {
+  analyzeWindow,
+  matchesDiffers,
+  analyzeContractEvidence,
+} from '@/lib/analysis'
+import type { ContractType } from '@/lib/analysis'
 import type { Market } from '@/lib/markets'
 
 import {
@@ -57,6 +61,8 @@ interface ScannerProps {
   onAnalyze: (symbol: string) => void
   activeSymbol?: string
   windowSize: number
+  contract: ContractType
+  onBestMarketChange: (symbol: string) => void
 }
 
 export function Scanner({
@@ -68,6 +74,8 @@ export function Scanner({
   onAnalyze,
   activeSymbol,
   windowSize,
+  contract,
+  onBestMarketChange,
 }: ScannerProps) {
   const [sort, setSort] = useState<SortKey>('bias')
 
@@ -77,7 +85,90 @@ export function Scanner({
 
   const [storageError, setStorageError] = useState<string | null>(null)
 
-  // Refresh stored tick counts as the scanner receives updates.
+  const contractLabel: Record<ContractType, string> = {
+    matches: 'Matches',
+    differs: 'Differs',
+    even: 'Even',
+    odd: 'Odd',
+    rise: 'Rise',
+    fall: 'Fall',
+  }
+
+  // Find markets with fresh historical CHECK evidence.
+  const contractSignals = useMemo(() => {
+    const now = Date.now()
+
+    return markets
+      .map((market) => {
+        const entry = entries[market.symbol]
+
+        if (
+          !entry ||
+          entry.error ||
+          entry.digits.length < 100 ||
+          now - entry.updatedAt > 15000
+        ) {
+          return null
+        }
+
+        const evidence = analyzeContractEvidence(
+          contract,
+          entry.digits,
+          entry.quotes,
+        )
+
+        if (
+          evidence.signal !== 'CHECK' ||
+          evidence.lowerBound === null
+        ) {
+          return null
+        }
+
+        return {
+          market,
+          evidence,
+          margin: evidence.lowerBound - evidence.baseline,
+        }
+      })
+      .filter((item): item is NonNullable<typeof item> => item !== null)
+      .sort(
+        (a, b) =>
+          b.margin - a.margin ||
+          b.evidence.tests - a.evidence.tests,
+      )
+  }, [markets, entries, contract])
+
+  const strongestSignal = contractSignals[0] ?? null
+
+  const activeSignal = contractSignals.find(
+    (item) => item.market.symbol === activeSymbol,
+  )
+
+  // Keep the current market if its evidence is almost as strong.
+  const bestSignal =
+    activeSignal &&
+    strongestSignal &&
+    strongestSignal.margin - activeSignal.margin <= 0.01
+      ? activeSignal
+      : strongestSignal
+
+  // Switch the main analyzer only while the scanner is running.
+  useEffect(() => {
+    if (
+      running &&
+      bestSignal &&
+      bestSignal.market.symbol !== activeSymbol
+    ) {
+      onBestMarketChange(bestSignal.market.symbol)
+    }
+  }, [
+    running,
+    bestSignal,
+    activeSymbol,
+    onBestMarketChange,
+  ])
+
+  // Refresh stored tick counts.
   useEffect(() => {
     let active = true
 
@@ -182,6 +273,116 @@ export function Scanner({
   return (
     <div className="space-y-4">
 
+      {/* BEST-MARKET CONTRACT SCANNER */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Radar className="size-5 text-primary" />
+            Best-market signal scanner
+          </CardTitle>
+
+          <CardDescription>
+            Selected contract: {contractLabel[contract]}.
+            Only fresh CHECK results with at least 100 historical tests qualify.
+          </CardDescription>
+        </CardHeader>
+
+        <CardContent className="space-y-3">
+          {bestSignal ? (
+            <>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <div className="text-lg font-bold">
+                    {bestSignal.market.name}
+                  </div>
+
+                  <div className="text-xs text-muted-foreground">
+                    {bestSignal.market.symbol}
+                    {' · '}
+                    {contractLabel[contract]}
+                    {' · '}
+                    {bestSignal.evidence.selection}
+                  </div>
+                </div>
+
+                <span className="rounded-md bg-primary/10 px-3 py-1.5 text-sm font-bold text-primary">
+                  CHECK SIGNAL FOUND
+                </span>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                <div className="rounded-md border p-2">
+                  <div className="text-xs text-muted-foreground">
+                    Model estimate
+                  </div>
+
+                  <div className="font-semibold tabular-nums">
+                    {(bestSignal.evidence.probability * 100).toFixed(1)}%
+                  </div>
+                </div>
+
+                <div className="rounded-md border p-2">
+                  <div className="text-xs text-muted-foreground">
+                    Historical tests
+                  </div>
+
+                  <div className="font-semibold tabular-nums">
+                    {bestSignal.evidence.tests.toLocaleString()}
+                  </div>
+                </div>
+
+                <div className="rounded-md border p-2">
+                  <div className="text-xs text-muted-foreground">
+                    Historical accuracy
+                  </div>
+
+                  <div className="font-semibold tabular-nums">
+                    {bestSignal.evidence.accuracy === null
+                      ? '—'
+                      : `${bestSignal.evidence.accuracy.toFixed(1)}%`}
+                  </div>
+                </div>
+
+                <div className="rounded-md border p-2">
+                  <div className="text-xs text-muted-foreground">
+                    95% lower bound
+                  </div>
+
+                  <div className="font-semibold tabular-nums">
+                    {(bestSignal.evidence.lowerBound! * 100).toFixed(1)}%
+                  </div>
+                </div>
+              </div>
+
+              <p className="text-sm text-muted-foreground">
+                {bestSignal.evidence.reason}
+              </p>
+
+              <p className="text-xs text-muted-foreground">
+                {running
+                  ? 'Scanner is running. The main analyzer will switch to this market when it qualifies.'
+                  : 'Start Scan all markets to enable automatic market switching.'}
+                {' '}
+                A CHECK is historical statistical evidence, not a guarantee
+                of the next result.
+              </p>
+            </>
+          ) : (
+            <div className="rounded-lg border border-dashed p-4">
+              <div className="font-semibold">
+                NO CHECK SIGNAL
+              </div>
+
+              <p className="mt-1 text-sm text-muted-foreground">
+                No market currently meets the selected contract's
+                historical threshold with fresh data. The scanner
+                will not invent a signal.
+              </p>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
       {/* AI TRAINING PROGRESS */}
       <Card>
         <CardHeader>
@@ -197,9 +398,7 @@ export function Scanner({
         </CardHeader>
 
         <CardContent className="space-y-4">
-
           <div className="grid gap-3 sm:grid-cols-3">
-
             <div className="rounded-lg border p-3">
               <div className="flex items-center gap-2 text-sm text-muted-foreground">
                 <Database className="size-4" />
@@ -242,12 +441,14 @@ export function Scanner({
                 Markets at 100,000 ticks
               </div>
             </div>
-
           </div>
 
           <div className="space-y-2">
             <div className="flex justify-between text-sm">
-              <span className="font-medium">Overall collection</span>
+              <span className="font-medium">
+                Overall collection
+              </span>
+
               <span className="tabular-nums text-muted-foreground">
                 {totalProgress.toFixed(2)}%
               </span>
@@ -282,7 +483,6 @@ export function Scanner({
 
               return (
                 <div key={market.symbol} className="space-y-1.5">
-
                   <div className="flex items-center justify-between gap-2 text-sm">
                     <div className="min-w-0">
                       <span className="font-medium">
@@ -315,10 +515,11 @@ export function Scanner({
                     <span>{progress.toFixed(2)}% collected</span>
 
                     <span>
-                      {complete ? 'Collection target reached' : 'Collecting'}
+                      {complete
+                        ? 'Collection target reached'
+                        : 'Collecting'}
                     </span>
                   </div>
-
                 </div>
               )
             })}
@@ -329,7 +530,6 @@ export function Scanner({
             to Deriv. Reaching 100,000 ticks means data collection is
             complete, not that a trained or validated AI model is ready.
           </p>
-
         </CardContent>
       </Card>
 
@@ -363,9 +563,10 @@ export function Scanner({
         </CardHeader>
 
         <CardContent className="space-y-3">
-
           <div className="flex flex-wrap items-center gap-2 text-sm">
-            <span className="text-muted-foreground">Rank by</span>
+            <span className="text-muted-foreground">
+              Rank by
+            </span>
 
             {(
               [
@@ -432,7 +633,9 @@ export function Scanner({
                       )}
                     >
                       <TableCell>
-                        <div className="font-medium">{market.name}</div>
+                        <div className="font-medium">
+                          {market.name}
+                        </div>
 
                         <div className="tabular text-xs text-muted-foreground">
                           {market.symbol} · {market.group}
@@ -577,7 +780,6 @@ export function Scanner({
               </TableBody>
             </Table>
           </div>
-
         </CardContent>
       </Card>
     </div>
@@ -603,4 +805,4 @@ function Pct({
       {value.toFixed(1)}%
     </TableCell>
   )
-}
+  }
