@@ -24,6 +24,7 @@ import {
 } from '@/lib/markets'
 
 import {
+  getTicks,
   saveTick,
   saveTicks,
 } from '@/lib/tick-storage'
@@ -351,6 +352,7 @@ function sideOf(prediction: DigitPrediction): number {
 export interface ScanEntry {
   quotes: number[]
   digits: number[]
+  epochs?: number[]
   pipSize: number
   updatedAt: number
   error?: string
@@ -359,6 +361,8 @@ export interface ScanEntry {
 /**
  * Streams selected markets and automatically saves
  * their historical and live ticks into IndexedDB.
+ *
+ * Also loads previously saved market history.
  */
 export function useMarketScanner(
   client: DerivClient | null,
@@ -383,6 +387,86 @@ export function useMarketScanner(
     const store: Record<string, ScanEntry> = {}
     let dirty = false
 
+    const historyLimit = Math.min(
+      10_000,
+      Math.max(count, 2_000),
+    )
+
+    function mergeTicks(
+      market: string,
+      incoming: {
+        quote: number
+        digit: number
+        epoch: number
+      }[],
+      pipSize: number,
+    ) {
+      const existing = store[market]
+
+      const combined = [
+        ...(existing?.quotes ?? []).map((quote, index) => ({
+          quote,
+          digit:
+            existing?.digits[index] ??
+            lastDigit(quote, pipSize),
+          epoch: existing?.epochs?.[index] ?? 0,
+        })),
+        ...incoming,
+      ]
+
+      const unique = new Map<
+        string,
+        {
+          quote: number
+          digit: number
+          epoch: number
+        }
+      >()
+
+      for (const tick of combined) {
+        const key = `${tick.epoch}:${tick.quote}`
+        unique.set(key, tick)
+      }
+
+      const merged = [...unique.values()]
+        .sort((a, b) => a.epoch - b.epoch)
+        .slice(-historyLimit)
+
+      store[market] = {
+        quotes: merged.map((tick) => tick.quote),
+        digits: merged.map((tick) => tick.digit),
+        epochs: merged.map((tick) => tick.epoch),
+        pipSize,
+        updatedAt: Date.now(),
+      }
+
+      dirty = true
+    }
+
+    // Load previously saved ticks for every market.
+    for (const market of markets) {
+      void getTicks(market.symbol, historyLimit)
+        .then((saved) => {
+          if (!active || !saved.length) return
+
+          mergeTicks(
+            market.symbol,
+            saved.map((tick) => ({
+              quote: tick.quote,
+              digit: tick.digit,
+              epoch: tick.epoch,
+            })),
+            market.pipSize,
+          )
+        })
+        .catch((error) => {
+          console.warn(
+            `TickLens history loading error (${market.symbol}):`,
+            error,
+          )
+        })
+    }
+
     const stops = markets.map((market) =>
       client.subscribe(
         {
@@ -398,6 +482,7 @@ export function useMarketScanner(
             store[market.symbol] = {
               quotes: [],
               digits: [],
+              epochs: [],
               pipSize: market.pipSize,
               updatedAt: Date.now(),
               error: msg.error.message,
@@ -414,24 +499,18 @@ export function useMarketScanner(
               (msg.pip_size as number | undefined) ??
               market.pipSize
 
-            const digits = history.prices.map((price) =>
-              lastDigit(price, pip),
-            )
-
-            store[market.symbol] = {
-              quotes: history.prices,
-              digits,
-              pipSize: pip,
-              updatedAt: Date.now(),
-            }
-
-            // Save the historical ticks for this market.
             const historicalTicks = history.prices.map(
               (quote, index) => ({
                 quote,
-                digit: digits[index],
+                digit: lastDigit(quote, pip),
                 epoch: history.times[index],
               }),
+            )
+
+            mergeTicks(
+              market.symbol,
+              historicalTicks,
+              pip,
             )
 
             void saveTicks(
@@ -444,51 +523,39 @@ export function useMarketScanner(
               )
             })
 
-            dirty = true
             return
           }
 
           if (msg.msg_type === 'tick') {
             const tick = msg.tick as TickPayload
-            const entry = store[market.symbol]
+            const pip = tick.pip_size ?? market.pipSize
 
-            if (!entry) return
-
-            const pip = tick.pip_size ?? entry.pipSize
-            const digit = lastDigit(tick.quote, pip)
-
-            entry.quotes = [
-              ...entry.quotes,
-              tick.quote,
-            ].slice(-count)
-
-            entry.digits = [
-              ...entry.digits,
-              digit,
-            ].slice(-count)
-
-            entry.pipSize = pip
-            entry.updatedAt = Date.now()
-
-            // Save the incoming live tick.
-            void saveTick(market.symbol, {
+            const incoming = {
               quote: tick.quote,
-              digit,
+              digit: lastDigit(tick.quote, pip),
               epoch: tick.epoch,
-            }).catch((error) => {
+            }
+
+            mergeTicks(
+              market.symbol,
+              [incoming],
+              pip,
+            )
+
+            void saveTick(
+              market.symbol,
+              incoming,
+            ).catch((error) => {
               console.error(
                 `TickLens live storage error (${market.symbol}):`,
                 error,
               )
             })
-
-            dirty = true
           }
         },
       ),
     )
 
-    // Update the visible scanner once per second.
     const timer = setInterval(() => {
       if (!active || !dirty) return
 
