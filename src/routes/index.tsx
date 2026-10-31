@@ -1,5 +1,4 @@
-
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { createFileRoute } from '@tanstack/react-router'
 import { toast } from 'sonner'
 
@@ -15,6 +14,7 @@ import {
 } from '@/hooks/use-deriv'
 
 import type { ConnectionStatus } from '@/lib/deriv'
+import type { ContractType } from '@/lib/analysis'
 
 import {
   FALLBACK_MARKETS,
@@ -38,6 +38,20 @@ function Home() {
   const [barrier, setBarrier] = useState(4)
   const [running, setRunning] = useState(false)
   const [scanning, setScanning] = useState(false)
+
+  // The user chooses the contract to scan.
+  const [contract, setContract] = useState<ContractType>('matches')
+
+  // Called by the scanner when another market has stronger CHECK evidence.
+  const handleBestMarketChange = useCallback(
+    (nextSymbol: string) => {
+      setSymbol((current) =>
+        current === nextSymbol ? current : nextSymbol,
+      )
+      setRunning(true)
+    },
+    [],
+  )
 
   // Main connection for individual market analysis.
   const main = useDerivConnection(settings, ready)
@@ -255,6 +269,8 @@ function Home() {
             onToggle={() => setRunning((value) => !value)}
             connected={main.status === 'open'}
             feed={feed}
+            contract={contract}
+            onContractChange={setContract}
           />
         </section>
 
@@ -271,6 +287,8 @@ function Home() {
               running ? market?.symbol : undefined
             }
             windowSize={SCANNER_WINDOW}
+            contract={contract}
+            onBestMarketChange={handleBestMarketChange}
           />
         </section>
       </main>
@@ -359,4 +377,4 @@ function Logo() {
       />
     </svg>
   )
-}
+    }
