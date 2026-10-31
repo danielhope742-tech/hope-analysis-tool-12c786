@@ -8,6 +8,7 @@ import {
   Square,
   Database,
   BrainCircuit,
+  Activity,
 } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
@@ -42,6 +43,17 @@ import {
   MAX_TICKS_PER_MARKET,
   type MarketStorageStats,
 } from '@/lib/tick-storage'
+
+import {
+  processSignalSnapshot,
+  getSignalPerformance,
+  getSignalRecords,
+} from '@/lib/signal-performance'
+
+import type {
+  PerformanceStats,
+  SignalRecord,
+} from '@/lib/signal-performance'
 
 import { cn } from '@/lib/utils'
 
@@ -85,6 +97,16 @@ export function Scanner({
   >({})
 
   const [storageError, setStorageError] = useState<string | null>(null)
+
+  const [performance, setPerformance] = useState<PerformanceStats>({
+    total: 0,
+    wins: 0,
+    losses: 0,
+    pending: 0,
+    winRate: 0,
+  })
+
+  const [recentRecords, setRecentRecords] = useState<SignalRecord[]>([])
 
   const contractLabel: Record<ContractType, string> = {
     matches: 'Matches',
@@ -171,8 +193,52 @@ export function Scanner({
     onBestMarketChange,
   ])
 
-  // Refresh storage statistics every 10 seconds,
-  // instead of querying IndexedDB on every live tick update.
+  // Record the selected scanner signal and settle previous signals
+  // against the next actual tick from each market.
+  useEffect(() => {
+    for (const market of markets) {
+      const entry = entries[market.symbol]
+
+      if (
+        !entry ||
+        entry.error ||
+        !entry.epochs ||
+        entry.epochs.length === 0
+      ) {
+        continue
+      }
+
+      const evidence = analyzeContractEvidence(
+        contract,
+        entry.digits,
+        entry.quotes,
+      )
+
+      const isSelectedSignal =
+        bestSignal?.market.symbol === market.symbol &&
+        evidence.signal === 'CHECK' &&
+        evidence.lowerBound !== null
+
+      processSignalSnapshot({
+        market: market.symbol,
+        contract,
+        selection: String(evidence.selection ?? ''),
+        signal: isSelectedSignal ? 'CHECK' : 'WAIT',
+        probability: evidence.probability ?? 0,
+        baseline: evidence.baseline ?? 0,
+        lowerBound: evidence.lowerBound ?? 0,
+        quotes: entry.quotes,
+        digits: entry.digits,
+        epochs: entry.epochs,
+      })
+    }
+
+    // Refresh dashboard from saved records.
+    setPerformance(getSignalPerformance())
+    setRecentRecords(getSignalRecords().slice(0, 5))
+  }, [markets, entries, contract, bestSignal])
+
+  // Refresh storage statistics every 10 seconds.
   useEffect(() => {
     let active = true
 
@@ -388,6 +454,147 @@ export function Scanner({
               </p>
             </div>
           )}
+        </CardContent>
+      </Card>
+
+      {/* SIGNAL PERFORMANCE DASHBOARD */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Activity className="size-5 text-primary" />
+            Signal performance tracker
+          </CardTitle>
+
+          <CardDescription>
+            Tracks selected CHECK signals and compares them with
+            the next actual tick. Results are saved on this device.
+          </CardDescription>
+        </CardHeader>
+
+        <CardContent className="space-y-4">
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <div className="rounded-lg border p-3">
+              <div className="text-xs text-muted-foreground">
+                Settled signals
+              </div>
+              <div className="mt-1 text-2xl font-bold tabular-nums">
+                {performance.total}
+              </div>
+            </div>
+
+            <div className="rounded-lg border p-3">
+              <div className="text-xs text-muted-foreground">
+                Wins
+              </div>
+              <div className="mt-1 text-2xl font-bold tabular-nums text-green-500">
+                {performance.wins}
+              </div>
+            </div>
+
+            <div className="rounded-lg border p-3">
+              <div className="text-xs text-muted-foreground">
+                Losses
+              </div>
+              <div className="mt-1 text-2xl font-bold tabular-nums text-destructive">
+                {performance.losses}
+              </div>
+            </div>
+
+            <div className="rounded-lg border p-3">
+              <div className="text-xs text-muted-foreground">
+                Pending
+              </div>
+              <div className="mt-1 text-2xl font-bold tabular-nums">
+                {performance.pending}
+              </div>
+            </div>
+          </div>
+
+          <div className="rounded-lg border p-3">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-sm font-medium">
+                Measured win rate
+              </span>
+              <span className="text-lg font-bold tabular-nums">
+                {performance.winRate.toFixed(1)}%
+              </span>
+            </div>
+
+            <div className="mt-2 h-2 overflow-hidden rounded-full bg-muted">
+              <div
+                className="h-full rounded-full bg-green-500 transition-all"
+                style={{
+                  width: `${Math.min(100, performance.winRate)}%`,
+                }}
+              />
+            </div>
+
+            <p className="mt-2 text-xs text-muted-foreground">
+              Based only on settled tracker records. Pending signals
+              are excluded. This is historical measurement, not a
+              guarantee of future performance.
+            </p>
+          </div>
+
+          <div className="space-y-2">
+            <div className="font-semibold text-sm">
+              Recent signal results
+            </div>
+
+            {recentRecords.length === 0 ? (
+              <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
+                No signals recorded yet. Start the scanner and wait
+                for a qualifying CHECK SIGNAL.
+              </div>
+            ) : (
+              <div className="overflow-x-auto rounded-lg border">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Market</TableHead>
+                      <TableHead>Contract</TableHead>
+                      <TableHead>Selection</TableHead>
+                      <TableHead>Result</TableHead>
+                    </TableRow>
+                  </TableHeader>
+
+                  <TableBody>
+                    {recentRecords.map((record) => (
+                      <TableRow key={record.id}>
+                        <TableCell className="font-medium">
+                          {record.market}
+                        </TableCell>
+
+                        <TableCell className="capitalize">
+                          {record.contract}
+                        </TableCell>
+
+                        <TableCell>
+                          {record.selection || '—'}
+                        </TableCell>
+
+                        <TableCell>
+                          <span
+                            className={cn(
+                              'rounded-md px-2 py-1 text-xs font-bold',
+                              record.status === 'WIN' &&
+                                'bg-green-500/10 text-green-600',
+                              record.status === 'LOSS' &&
+                                'bg-destructive/10 text-destructive',
+                              record.status === 'PENDING' &&
+                                'bg-muted text-muted-foreground',
+                            )}
+                          >
+                            {record.status}
+                          </span>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            )}
+          </div>
         </CardContent>
       </Card>
 
