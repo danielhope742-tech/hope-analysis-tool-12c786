@@ -1,3 +1,4 @@
+
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   Activity,
@@ -69,6 +70,14 @@ const CONTRACTS: { value: ContractType; label: string }[] = [
   { value: 'rise', label: 'Rise' },
   { value: 'fall', label: 'Fall' },
 ]
+
+interface DigitRecommendation {
+  title: string
+  selection: string
+  estimate: number
+  description: string
+  digit?: number
+}
 
 export function Analyzer({
   markets,
@@ -200,10 +209,86 @@ export function Analyzer({
       ? (evidence.hits / evidence.tests) * 100
       : null
 
+  // IMPORTANT:
+  // These analysis values are already percentages (0–100).
+  // Do not multiply them by 100 again.
   const percent = (value: number | null | undefined) =>
-    value === null || value === undefined
+    value === null || value === undefined || !Number.isFinite(value)
       ? '—'
-      : `${(value * 100).toFixed(1)}%`
+      : `${value.toFixed(1)}%`
+
+  // Generate a recommendation for the user's selected contract.
+  // These are historical model estimates, not guaranteed next-tick results.
+  const recommendation = useMemo<DigitRecommendation | null>(() => {
+    if (!feed.digits.length || !feed.quotes.length) return null
+
+    if (contract === 'matches' || contract === 'differs') {
+      if (!prediction || !prediction.ranked?.length) return null
+
+      const digit =
+        contract === 'matches'
+          ? prediction.ranked[0]
+          : prediction.ranked[prediction.ranked.length - 1]
+
+      const matchScore =
+        prediction.distribution[digit] * 100
+
+      const estimate =
+        contract === 'matches'
+          ? matchScore
+          : 100 - matchScore
+
+      return {
+        title: contract === 'matches'
+          ? 'Recommended Matches digit'
+          : 'Recommended Differs barrier',
+        selection: contract === 'matches'
+          ? `Matches ${digit}`
+          : `Differs ${digit}`,
+        estimate,
+        digit,
+        description: contract === 'matches'
+          ? 'The digit with the highest model score.'
+          : 'The digit with the lowest model score; the complementary estimate is shown.',
+      }
+    }
+
+    if (contract === 'even') {
+      return {
+        title: 'Even contract estimate',
+        selection: 'Even',
+        estimate: stats.even,
+        description: 'Historical share of even last digits.',
+      }
+    }
+
+    if (contract === 'odd') {
+      return {
+        title: 'Odd contract estimate',
+        selection: 'Odd',
+        estimate: stats.odd,
+        description: 'Historical share of odd last digits.',
+      }
+    }
+
+    if (contract === 'rise') {
+      return {
+        title: 'Rise contract estimate',
+        selection: 'Rise',
+        estimate: stats.rise,
+        description: 'Historical share of upward tick movements.',
+      }
+    }
+
+    return {
+      title: 'Fall contract estimate',
+      selection: 'Fall',
+      estimate: stats.fall,
+      description: 'Historical share of downward tick movements.',
+    }
+  }, [contract, feed.digits.length, feed.quotes.length, prediction, stats])
+
+  const recentDigits = feed.digits.slice(-48)
 
   return (
     <section
@@ -399,6 +484,66 @@ export function Analyzer({
           </CardHeader>
 
           <CardContent className="space-y-5">
+            {/* LIVE DIGIT RECOMMENDATION */}
+            <div className="rounded-lg border border-primary/40 bg-primary/5 p-4">
+              <div className="mb-3 flex items-center gap-2">
+                <Target className="size-5 text-primary" />
+                <span className="font-semibold">
+                  Live digit recommendation
+                </span>
+              </div>
+
+              {recommendation ? (
+                <div className="space-y-3">
+                  <div className="text-xs text-muted-foreground">
+                    {recommendation.title}
+                  </div>
+
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div className="text-3xl font-bold text-primary">
+                      {recommendation.selection}
+                    </div>
+
+                    {recommendation.digit !== undefined && (
+                      <div className="flex size-14 items-center justify-center rounded-xl border border-primary/40 bg-background text-3xl font-bold">
+                        {recommendation.digit}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="flex items-center justify-between gap-2 text-sm">
+                    <span className="text-muted-foreground">
+                      Historical model estimate
+                    </span>
+                    <span className="font-bold tabular">
+                      {percent(recommendation.estimate)}
+                    </span>
+                  </div>
+
+                  <div className="h-2 overflow-hidden rounded-full bg-muted">
+                    <div
+                      className="h-full rounded-full bg-primary transition-all"
+                      style={{
+                        width: `${Math.max(0, Math.min(100, recommendation.estimate))}%`,
+                      }}
+                    />
+                  </div>
+
+                  <p className="text-xs text-muted-foreground">
+                    {recommendation.description}
+                  </p>
+
+                  <Badge variant="outline">
+                    Model recommendation · Not guaranteed
+                  </Badge>
+                </div>
+              ) : (
+                <div className="text-sm text-muted-foreground">
+                  Waiting for enough live tick data to calculate a recommendation.
+                </div>
+              )}
+            </div>
+
             {!evidence ? (
               <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
                 {running
@@ -510,9 +655,10 @@ export function Analyzer({
                 <p className="text-xs text-muted-foreground">
                   CHECK means the historical test met the model's
                   statistical threshold. WAIT means the evidence is
-                  insufficient. Neither predicts or guarantees the
-                  next tick. STALE means new ticks arrived after this
-                  snapshot; wait for the next 6-second refresh.
+                  insufficient. The recommendation is a historical
+                  estimate, not a guarantee of the next tick.
+                  STALE means new ticks arrived after this snapshot;
+                  wait for the next 6-second refresh.
                 </p>
               </>
             )}
@@ -875,15 +1021,15 @@ export function Analyzer({
 
         <CardContent className="space-y-4">
           <div className="flex flex-wrap gap-1.5">
-            {feed.digits.slice(-48).map((d, i, arr) => (
+            {recentDigits.map((d, i) => (
               <span
-                key={`${feed.digits.length - arr.length + i}`}
+                key={`${feed.digits.length - recentDigits.length + i}`}
                 className={cn(
                   'tabular flex size-8 items-center justify-center rounded-md text-sm font-semibold',
                   d % 2 === 0
                     ? 'bg-chart-2/20 text-chart-2'
                     : 'bg-chart-4/20 text-chart-4',
-                  i === arr.length - 1 && 'ring-2 ring-primary',
+                  i === recentDigits.length - 1 && 'ring-2 ring-primary',
                 )}
               >
                 {d}
@@ -978,4 +1124,4 @@ function AccuracyStat({
       </div>
     </div>
   )
-    }
+}
