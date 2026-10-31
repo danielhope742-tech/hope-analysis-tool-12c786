@@ -1,4 +1,3 @@
-
 export type TrackedContract =
   | 'matches'
   | 'differs'
@@ -77,26 +76,37 @@ function saveRecords(records: SignalRecord[]): void {
   }
 }
 
+function extractDigit(selection: string): number | null {
+  const match = selection.match(/\b([0-9])\b/);
+
+  if (!match) return null;
+
+  return Number(match[1]);
+}
+
 function evaluateOutcome(
   contract: TrackedContract,
   selection: string,
   signalQuote: number,
-  signalDigit: number,
   resultQuote: number,
   resultDigit: number
 ): boolean {
   switch (contract) {
-    case 'matches':
-      return resultDigit === Number(selection);
+    case 'matches': {
+      const digit = extractDigit(selection);
+      return digit !== null && resultDigit === digit;
+    }
 
-    case 'differs':
-      return resultDigit !== Number(selection);
+    case 'differs': {
+      const digit = extractDigit(selection);
+      return digit !== null && resultDigit !== digit;
+    }
 
     case 'even':
       return resultDigit % 2 === 0;
 
     case 'odd':
-      return resultDigit % 2 !== 0;
+      return resultDigit % 2 === 1;
 
     case 'rise':
       return resultQuote > signalQuote;
@@ -126,14 +136,19 @@ export function processSignalSnapshot(
     quote: snapshot.quotes[index],
     digit: snapshot.digits[index],
     epoch: snapshot.epochs![index],
-  })).filter(
-    tick =>
+  }))
+    .filter(tick =>
       Number.isFinite(tick.quote) &&
-      Number.isFinite(tick.digit) &&
+      Number.isInteger(tick.digit) &&
+      tick.digit >= 0 &&
+      tick.digit <= 9 &&
       Number.isFinite(tick.epoch)
-  );
+    )
+    .sort((a, b) => a.epoch - b.epoch);
 
-  // Settle earlier signals using the first tick after each signal.
+  if (ticks.length < 2) return records;
+
+  // Settle pending signals using the first later tick.
   for (const record of records) {
     if (
       record.status !== 'PENDING' ||
@@ -152,7 +167,6 @@ export function processSignalSnapshot(
       record.contract,
       record.selection,
       record.signalQuote,
-      record.signalDigit,
       nextTick.quote,
       nextTick.digit
     );
@@ -163,11 +177,23 @@ export function processSignalSnapshot(
     record.resultDigit = nextTick.digit;
   }
 
-  // Only create a record when the scanner has a CHECK signal.
+  // Record new CHECK signals only.
   if (snapshot.signal === 'CHECK') {
     const lastTick = ticks[ticks.length - 1];
 
     if (lastTick) {
+      const selectedDigit =
+        snapshot.contract === 'matches' ||
+        snapshot.contract === 'differs'
+          ? extractDigit(snapshot.selection)
+          : null;
+
+      const validSelection =
+        snapshot.contract === 'matches' ||
+        snapshot.contract === 'differs'
+          ? selectedDigit !== null
+          : true;
+
       const id = [
         snapshot.market,
         snapshot.contract,
@@ -178,12 +204,6 @@ export function processSignalSnapshot(
       const alreadyRecorded = records.some(
         record => record.id === id
       );
-
-      const validSelection =
-        snapshot.contract !== 'matches' &&
-        snapshot.contract !== 'differs'
-          ? true
-          : /^[0-9]$/.test(snapshot.selection);
 
       if (!alreadyRecorded && validSelection) {
         records.push({
@@ -247,4 +267,4 @@ export function clearSignalPerformance(): void {
   } catch {
     // Storage may be unavailable.
   }
-}
+        }
