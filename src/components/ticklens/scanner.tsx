@@ -1,3 +1,4 @@
+
 import { useEffect, useMemo, useState } from 'react'
 import {
   ArrowRight,
@@ -94,7 +95,7 @@ export function Scanner({
     fall: 'Fall',
   }
 
-  // Find markets with fresh historical CHECK evidence.
+  // Find fresh markets with qualifying contract evidence.
   const contractSignals = useMemo(() => {
     const now = Date.now()
 
@@ -130,7 +131,9 @@ export function Scanner({
           margin: evidence.lowerBound - evidence.baseline,
         }
       })
-      .filter((item): item is NonNullable<typeof item> => item !== null)
+      .filter(
+        (item): item is NonNullable<typeof item> => item !== null,
+      )
       .sort(
         (a, b) =>
           b.margin - a.margin ||
@@ -144,7 +147,7 @@ export function Scanner({
     (item) => item.market.symbol === activeSymbol,
   )
 
-  // Keep the current market if its evidence is almost as strong.
+  // Keep the current market if its evidence is nearly as strong.
   const bestSignal =
     activeSignal &&
     strongestSignal &&
@@ -152,7 +155,7 @@ export function Scanner({
       ? activeSignal
       : strongestSignal
 
-  // Switch the main analyzer only while the scanner is running.
+  // Switch the main analyzer only while scanning.
   useEffect(() => {
     if (
       running &&
@@ -168,7 +171,8 @@ export function Scanner({
     onBestMarketChange,
   ])
 
-  // Refresh stored tick counts.
+  // Refresh storage statistics every 10 seconds,
+  // instead of querying IndexedDB on every live tick update.
   useEffect(() => {
     let active = true
 
@@ -203,10 +207,15 @@ export function Scanner({
 
     void refreshStorage()
 
+    const timer = setInterval(() => {
+      void refreshStorage()
+    }, 10000)
+
     return () => {
       active = false
+      clearInterval(timer)
     }
-  }, [markets, entries])
+  }, [markets])
 
   const totalStored = Object.values(storageStats).reduce(
     (sum, item) => sum + item.count,
@@ -272,7 +281,6 @@ export function Scanner({
 
   return (
     <div className="space-y-4">
-
       {/* BEST-MARKET CONTRACT SCANNER */}
       <Card>
         <CardHeader>
@@ -317,7 +325,7 @@ export function Scanner({
                   </div>
 
                   <div className="font-semibold tabular-nums">
-                    {(bestSignal.evidence.probability * 100).toFixed(1)}%
+                    {bestSignal.evidence.probability.toFixed(1)}%
                   </div>
                 </div>
 
@@ -349,7 +357,7 @@ export function Scanner({
                   </div>
 
                   <div className="font-semibold tabular-nums">
-                    {(bestSignal.evidence.lowerBound! * 100).toFixed(1)}%
+                    {bestSignal.evidence.lowerBound!.toFixed(1)}%
                   </div>
                 </div>
               </div>
@@ -383,12 +391,12 @@ export function Scanner({
         </CardContent>
       </Card>
 
-      {/* AI TRAINING PROGRESS */}
+      {/* DATA COLLECTION PROGRESS */}
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <BrainCircuit className="size-5 text-primary" />
-            TickLens AI Training Progress
+            TickLens Data Collection Progress
           </CardTitle>
 
           <CardDescription>
@@ -805,4 +813,4 @@ function Pct({
       {value.toFixed(1)}%
     </TableCell>
   )
-  }
+}
