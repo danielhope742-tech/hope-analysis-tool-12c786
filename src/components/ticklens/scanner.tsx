@@ -40,6 +40,7 @@ import type { Market } from '@/lib/markets'
 
 import {
   getMarketStorageStats,
+  getTicks,
   MAX_TICKS_PER_MARKET,
   type MarketStorageStats,
 } from '@/lib/tick-storage'
@@ -54,6 +55,14 @@ import type {
   PerformanceStats,
   SignalRecord,
 } from '@/lib/signal-performance'
+
+import {
+  trainMarketStrategies,
+} from '@/lib/ai-trainer'
+
+import type {
+  MarketTrainingReport,
+} from '@/lib/ai-trainer'
 
 import { cn } from '@/lib/utils'
 
@@ -108,6 +117,15 @@ export function Scanner({
 
   const [recentRecords, setRecentRecords] = useState<SignalRecord[]>([])
 
+  // AI training state
+  const [training, setTraining] = useState(false)
+
+  const [trainingReport, setTrainingReport] =
+    useState<MarketTrainingReport | null>(null)
+
+  const [trainingError, setTrainingError] =
+    useState<string | null>(null)
+
   const contractLabel: Record<ContractType, string> = {
     matches: 'Matches',
     differs: 'Differs',
@@ -117,8 +135,43 @@ export function Scanner({
     fall: 'Fall',
   }
 
-  // Estimate live collection speed using the latest 10 seconds
-  // of timestamps received from each market.
+  // Use the currently selected market for training.
+  const trainingMarket =
+    markets.find(market => market.symbol === activeSymbol) ??
+    markets[0]
+
+  // Run the trainer using saved IndexedDB ticks.
+  async function handleTrain() {
+    if (!trainingMarket || training) return
+
+    setTraining(true)
+    setTrainingError(null)
+    setTrainingReport(null)
+
+    try {
+      const ticks = await getTicks(
+        trainingMarket.symbol,
+        5000,
+      )
+
+      const report = trainMarketStrategies(
+        trainingMarket.symbol,
+        ticks,
+      )
+
+      setTrainingReport(report)
+    } catch (error) {
+      setTrainingError(
+        error instanceof Error
+          ? error.message
+          : 'Training could not be completed.',
+      )
+    } finally {
+      setTraining(false)
+    }
+  }
+
+  // Estimate live collection speed using the latest 10 seconds.
   const liveStats = useMemo(() => {
     const cutoff = Math.floor(Date.now() / 1000) - 10
 
@@ -146,7 +199,7 @@ export function Scanner({
       }
 
       const recentCount = entry?.epochs
-        ? entry.epochs.filter((epoch) => epoch >= cutoff).length
+        ? entry.epochs.filter(epoch => epoch >= cutoff).length
         : 0
 
       const rate = recentCount / 10
@@ -183,7 +236,7 @@ export function Scanner({
     const now = Date.now()
 
     return markets
-      .map((market) => {
+      .map(market => {
         const entry = entries[market.symbol]
 
         if (
@@ -215,7 +268,8 @@ export function Scanner({
         }
       })
       .filter(
-        (item): item is NonNullable<typeof item> => item !== null,
+        (item): item is NonNullable<typeof item> =>
+          item !== null,
       )
       .sort(
         (a, b) =>
@@ -227,7 +281,7 @@ export function Scanner({
   const strongestSignal = contractSignals[0] ?? null
 
   const activeSignal = contractSignals.find(
-    (item) => item.market.symbol === activeSymbol,
+    item => item.market.symbol === activeSymbol,
   )
 
   const bestSignal =
@@ -253,8 +307,7 @@ export function Scanner({
     onBestMarketChange,
   ])
 
-  // Record signals only while scanning and settle previous
-  // signals against the next actual tick from each market.
+  // Record signals only while scanning.
   useEffect(() => {
     for (const market of markets) {
       const entry = entries[market.symbol]
@@ -305,7 +358,7 @@ export function Scanner({
     async function refreshStorage() {
       try {
         const results = await Promise.all(
-          markets.map((market) =>
+          markets.map(market =>
             getMarketStorageStats(market.symbol),
           ),
         )
@@ -355,11 +408,11 @@ export function Scanner({
     : 0
 
   const readyMarkets = Object.values(storageStats).filter(
-    (item) => item.count >= MAX_TICKS_PER_MARKET,
+    item => item.count >= MAX_TICKS_PER_MARKET,
   ).length
 
   const rows = useMemo(() => {
-    const list = markets.map((market) => {
+    const list = markets.map(market => {
       const entry = entries[market.symbol]
 
       const stats =
@@ -407,6 +460,7 @@ export function Scanner({
 
   return (
     <div className="space-y-4">
+
       {/* BEST-MARKET CONTRACT SCANNER */}
       <Card>
         <CardHeader>
@@ -614,7 +668,7 @@ export function Scanner({
                   </TableHeader>
 
                   <TableBody>
-                    {recentRecords.map((record) => (
+                    {recentRecords.map(record => (
                       <TableRow key={record.id}>
                         <TableCell className="font-medium">
                           {record.market}
@@ -647,6 +701,193 @@ export function Scanner({
               </div>
             )}
           </div>
+        </CardContent>
+      </Card>
+
+      {/* SMART AI STRATEGY TRAINER */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <BrainCircuit className="size-5 text-primary" />
+            Smart AI Strategy Trainer
+          </CardTitle>
+
+          <CardDescription>
+            Tests six strategies using saved historical ticks,
+            then evaluates them on a separate unseen validation period.
+          </CardDescription>
+        </CardHeader>
+
+        <CardContent className="space-y-4">
+          <div className="rounded-lg border p-3">
+            <div className="text-xs text-muted-foreground">
+              Selected training market
+            </div>
+
+            <div className="mt-1 font-bold">
+              {trainingMarket
+                ? `${trainingMarket.name} (${trainingMarket.symbol})`
+                : 'No market available'}
+            </div>
+
+            <p className="mt-1 text-xs text-muted-foreground">
+              Uses up to 5,000 saved ticks from this market.
+              Select a different market in the main analyzer to train it.
+            </p>
+          </div>
+
+          <Button
+            className="w-full"
+            onClick={handleTrain}
+            disabled={training || !trainingMarket}
+          >
+            {training ? (
+              <>
+                <Loader2 className="mr-2 size-4 animate-spin" />
+                Training strategies...
+              </>
+            ) : (
+              <>
+                <BrainCircuit className="mr-2 size-4" />
+                TRAIN SELECTED MARKET
+              </>
+            )}
+          </Button>
+
+          {trainingError && (
+            <p className="text-sm text-destructive">
+              {trainingError}
+            </p>
+          )}
+
+          {trainingReport && (
+            <div className="space-y-4">
+              <div className="rounded-lg border p-3">
+                <div className="font-semibold">
+                  Training report: {trainingReport.market}
+                </div>
+
+                <p className="mt-1 text-sm text-muted-foreground">
+                  {trainingReport.message}
+                </p>
+
+                <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3">
+                  <div className="rounded-md bg-muted p-2">
+                    <div className="text-xs text-muted-foreground">
+                      Unique ticks
+                    </div>
+                    <div className="font-bold tabular-nums">
+                      {trainingReport.uniqueTicks.toLocaleString()}
+                    </div>
+                  </div>
+
+                  <div className="rounded-md bg-muted p-2">
+                    <div className="text-xs text-muted-foreground">
+                      Training ticks
+                    </div>
+                    <div className="font-bold tabular-nums">
+                      {trainingReport.trainingTicks.toLocaleString()}
+                    </div>
+                  </div>
+
+                  <div className="rounded-md bg-muted p-2">
+                    <div className="text-xs text-muted-foreground">
+                      Validation ticks
+                    </div>
+                    <div className="font-bold tabular-nums">
+                      {trainingReport.validationTicks.toLocaleString()}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <div className="font-semibold text-sm">
+                  Strategy validation results
+                </div>
+
+                {trainingReport.strategies.map(strategy => (
+                  <div
+                    key={strategy.contract}
+                    className="space-y-2 rounded-lg border p-3"
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="font-semibold capitalize">
+                        {strategy.contract}
+                      </span>
+
+                      <span
+                        className={cn(
+                          'rounded-md px-2 py-1 text-xs font-bold',
+                          strategy.status === 'VALIDATION_EDGE' &&
+                            'bg-green-500/10 text-green-600',
+                          strategy.status === 'NO_VALIDATION_EDGE' &&
+                            'bg-destructive/10 text-destructive',
+                          strategy.status === 'INSUFFICIENT_VALIDATION' &&
+                            'bg-muted text-muted-foreground',
+                        )}
+                      >
+                        {strategy.status === 'VALIDATION_EDGE'
+                          ? 'PASSED VALIDATION'
+                          : strategy.status === 'NO_VALIDATION_EDGE'
+                            ? 'NO EDGE DEMONSTRATED'
+                            : 'MORE TESTS NEEDED'}
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2">
+                      <div className="rounded-md bg-muted p-2">
+                        <div className="text-xs text-muted-foreground">
+                          Training accuracy
+                        </div>
+                        <div className="font-bold tabular-nums">
+                          {strategy.training.accuracy === null
+                            ? '—'
+                            : `${strategy.training.accuracy.toFixed(1)}%`}
+                        </div>
+                        <div className="text-xs text-muted-foreground">
+                          {strategy.training.tests} tests
+                        </div>
+                      </div>
+
+                      <div className="rounded-md bg-muted p-2">
+                        <div className="text-xs text-muted-foreground">
+                          Validation accuracy
+                        </div>
+                        <div className="font-bold tabular-nums">
+                          {strategy.validation.accuracy === null
+                            ? '—'
+                            : `${strategy.validation.accuracy.toFixed(1)}%`}
+                        </div>
+                        <div className="text-xs text-muted-foreground">
+                          {strategy.validation.tests} tests
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="text-xs text-muted-foreground">
+                      Reference baseline: {strategy.validation.baseline}%
+                      {' · '}
+                      Validation lower bound:{' '}
+                      {strategy.validation.lowerBound === null
+                        ? '—'
+                        : `${strategy.validation.lowerBound.toFixed(1)}%`}
+                    </div>
+
+                    <p className="text-xs text-muted-foreground">
+                      {strategy.explanation}
+                    </p>
+                  </div>
+                ))}
+              </div>
+
+              <p className="text-xs text-muted-foreground">
+                Training uses historical data and does not guarantee
+                future outcomes. Validation is a historical test,
+                not a live trading signal.
+              </p>
+            </div>
+          )}
         </CardContent>
       </Card>
 
@@ -719,7 +960,7 @@ export function Scanner({
               Individual market activity
             </div>
 
-            {markets.map((market) => {
+            {markets.map(market => {
               const live = liveStats.perMarket[market.symbol]
 
               return (
@@ -849,7 +1090,7 @@ export function Scanner({
               Individual market collection
             </div>
 
-            {markets.map((market) => {
+            {markets.map(market => {
               const item = storageStats[market.symbol]
               const count = item?.count ?? 0
               const progress = item?.progress ?? 0
@@ -1144,7 +1385,7 @@ export function Scanner({
                           size="icon-sm"
                           variant="ghost"
                           aria-label={`Analyse ${market.name}`}
-                          onClick={(event) => {
+                          onClick={event => {
                             event.stopPropagation()
                             onAnalyze(market.symbol)
                           }}
