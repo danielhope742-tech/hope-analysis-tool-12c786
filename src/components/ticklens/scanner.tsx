@@ -117,6 +117,67 @@ export function Scanner({
     fall: 'Fall',
   }
 
+  // Estimate live collection speed using the latest 10 seconds
+  // of timestamps received from each market.
+  const liveStats = useMemo(() => {
+    const cutoff = Math.floor(Date.now() / 1000) - 10
+
+    let totalTicksPerSecond = 0
+    let liveMarkets = 0
+    let waitingMarkets = 0
+
+    const perMarket: Record<
+      string,
+      {
+        rate: number
+        status: 'LIVE' | 'WAITING' | 'STOPPED'
+      }
+    > = {}
+
+    for (const market of markets) {
+      const entry = entries[market.symbol]
+
+      if (!running) {
+        perMarket[market.symbol] = {
+          rate: 0,
+          status: 'STOPPED',
+        }
+        continue
+      }
+
+      const recentCount = entry?.epochs
+        ? entry.epochs.filter((epoch) => epoch >= cutoff).length
+        : 0
+
+      const rate = recentCount / 10
+
+      const fresh =
+        !!entry &&
+        !entry.error &&
+        Date.now() - entry.updatedAt <= 15000
+
+      const status =
+        fresh && recentCount > 0 ? 'LIVE' : 'WAITING'
+
+      perMarket[market.symbol] = { rate, status }
+
+      totalTicksPerSecond += rate
+
+      if (status === 'LIVE') {
+        liveMarkets++
+      } else {
+        waitingMarkets++
+      }
+    }
+
+    return {
+      perMarket,
+      totalTicksPerSecond,
+      liveMarkets,
+      waitingMarkets,
+    }
+  }, [markets, entries, running])
+
   // Find fresh markets with qualifying contract evidence.
   const contractSignals = useMemo(() => {
     const now = Date.now()
@@ -169,7 +230,6 @@ export function Scanner({
     (item) => item.market.symbol === activeSymbol,
   )
 
-  // Keep the current market if its evidence is nearly as strong.
   const bestSignal =
     activeSignal &&
     strongestSignal &&
@@ -193,8 +253,8 @@ export function Scanner({
     onBestMarketChange,
   ])
 
-  // Record the selected scanner signal and settle previous signals
-  // against the next actual tick from each market.
+  // Record signals only while scanning and settle previous
+  // signals against the next actual tick from each market.
   useEffect(() => {
     for (const market of markets) {
       const entry = entries[market.symbol]
@@ -215,6 +275,7 @@ export function Scanner({
       )
 
       const isSelectedSignal =
+        running &&
         bestSignal?.market.symbol === market.symbol &&
         evidence.signal === 'CHECK' &&
         evidence.lowerBound !== null
@@ -233,12 +294,11 @@ export function Scanner({
       })
     }
 
-    // Refresh dashboard from saved records.
     setPerformance(getSignalPerformance())
     setRecentRecords(getSignalRecords().slice(0, 5))
-  }, [markets, entries, contract, bestSignal])
+  }, [markets, entries, contract, bestSignal, running])
 
-  // Refresh storage statistics every 10 seconds.
+  // Refresh storage statistics every three seconds.
   useEffect(() => {
     let active = true
 
@@ -275,7 +335,7 @@ export function Scanner({
 
     const timer = setInterval(() => {
       void refreshStorage()
-    }, 10000)
+    }, 3000)
 
     return () => {
       active = false
@@ -389,7 +449,6 @@ export function Scanner({
                   <div className="text-xs text-muted-foreground">
                     Model estimate
                   </div>
-
                   <div className="font-semibold tabular-nums">
                     {bestSignal.evidence.probability.toFixed(1)}%
                   </div>
@@ -399,7 +458,6 @@ export function Scanner({
                   <div className="text-xs text-muted-foreground">
                     Historical tests
                   </div>
-
                   <div className="font-semibold tabular-nums">
                     {bestSignal.evidence.tests.toLocaleString()}
                   </div>
@@ -409,7 +467,6 @@ export function Scanner({
                   <div className="text-xs text-muted-foreground">
                     Historical accuracy
                   </div>
-
                   <div className="font-semibold tabular-nums">
                     {bestSignal.evidence.accuracy === null
                       ? '—'
@@ -421,7 +478,6 @@ export function Scanner({
                   <div className="text-xs text-muted-foreground">
                     95% lower bound
                   </div>
-
                   <div className="font-semibold tabular-nums">
                     {bestSignal.evidence.lowerBound!.toFixed(1)}%
                   </div>
@@ -446,7 +502,6 @@ export function Scanner({
               <div className="font-semibold">
                 NO CHECK SIGNAL
               </div>
-
               <p className="mt-1 text-sm text-muted-foreground">
                 No market currently meets the selected contract's
                 historical threshold with fresh data. The scanner
@@ -564,15 +619,12 @@ export function Scanner({
                         <TableCell className="font-medium">
                           {record.market}
                         </TableCell>
-
                         <TableCell className="capitalize">
                           {record.contract}
                         </TableCell>
-
                         <TableCell>
                           {record.selection || '—'}
                         </TableCell>
-
                         <TableCell>
                           <span
                             className={cn(
@@ -598,6 +650,120 @@ export function Scanner({
         </CardContent>
       </Card>
 
+      {/* ALL-MARKET LIVE COLLECTION MONITOR */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Activity className="size-5 text-primary" />
+            All-Market Live Collection Monitor
+          </CardTitle>
+
+          <CardDescription>
+            Live activity across every synthetic market returned by Deriv.
+          </CardDescription>
+        </CardHeader>
+
+        <CardContent className="space-y-4">
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <div className="rounded-lg border p-3">
+              <div className="text-xs text-muted-foreground">
+                Total collection speed
+              </div>
+              <div className="mt-2 text-2xl font-bold tabular-nums">
+                {liveStats.totalTicksPerSecond.toFixed(1)}
+              </div>
+              <div className="text-xs text-muted-foreground">
+                ticks / second
+              </div>
+            </div>
+
+            <div className="rounded-lg border p-3">
+              <div className="text-xs text-muted-foreground">
+                Active markets
+              </div>
+              <div className="mt-2 text-2xl font-bold tabular-nums text-green-500">
+                {liveStats.liveMarkets}
+              </div>
+              <div className="text-xs text-muted-foreground">
+                Receiving recent ticks
+              </div>
+            </div>
+
+            <div className="rounded-lg border p-3">
+              <div className="text-xs text-muted-foreground">
+                Waiting markets
+              </div>
+              <div className="mt-2 text-2xl font-bold tabular-nums">
+                {liveStats.waitingMarkets}
+              </div>
+              <div className="text-xs text-muted-foreground">
+                No recent ticks detected
+              </div>
+            </div>
+
+            <div className="rounded-lg border p-3">
+              <div className="text-xs text-muted-foreground">
+                Markets scanned
+              </div>
+              <div className="mt-2 text-2xl font-bold tabular-nums">
+                {markets.length}
+              </div>
+              <div className="text-xs text-muted-foreground">
+                Available markets
+              </div>
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <div className="font-semibold text-sm">
+              Individual market activity
+            </div>
+
+            {markets.map((market) => {
+              const live = liveStats.perMarket[market.symbol]
+
+              return (
+                <div
+                  key={market.symbol}
+                  className="flex items-center justify-between gap-3 rounded-lg border p-3"
+                >
+                  <div className="min-w-0">
+                    <div className="truncate text-sm font-medium">
+                      {market.name}
+                    </div>
+                    <div className="text-xs text-muted-foreground">
+                      {market.symbol}
+                    </div>
+                  </div>
+
+                  <div className="shrink-0 text-right">
+                    <div
+                      className={cn(
+                        'text-xs font-bold',
+                        live?.status === 'LIVE' && 'text-green-500',
+                        live?.status === 'WAITING' && 'text-yellow-500',
+                        live?.status === 'STOPPED' && 'text-muted-foreground',
+                      )}
+                    >
+                      {live?.status ?? 'WAITING'}
+                    </div>
+                    <div className="text-xs tabular-nums text-muted-foreground">
+                      {(live?.rate ?? 0).toFixed(1)} ticks/s
+                    </div>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+
+          <p className="text-xs text-muted-foreground">
+            Speed is estimated from tick timestamps in the latest 10 seconds.
+            A waiting market may simply have no recent tick. Live speed depends
+            on Deriv's tick delivery and your connection.
+          </p>
+        </CardContent>
+      </Card>
+
       {/* DATA COLLECTION PROGRESS */}
       <Card>
         <CardHeader>
@@ -619,11 +785,9 @@ export function Scanner({
                 <Database className="size-4" />
                 Total collected
               </div>
-
               <div className="mt-2 text-2xl font-bold tabular-nums">
                 {totalStored.toLocaleString()}
               </div>
-
               <div className="text-xs text-muted-foreground">
                 of {totalTarget.toLocaleString()} ticks
               </div>
@@ -633,11 +797,9 @@ export function Scanner({
               <div className="text-sm text-muted-foreground">
                 Markets selected
               </div>
-
               <div className="mt-2 text-2xl font-bold tabular-nums">
                 {markets.length}
               </div>
-
               <div className="text-xs text-muted-foreground">
                 Synthetic markets
               </div>
@@ -647,13 +809,11 @@ export function Scanner({
               <div className="text-sm text-muted-foreground">
                 Collection complete
               </div>
-
               <div className="mt-2 text-2xl font-bold tabular-nums">
                 {readyMarkets}/{markets.length}
               </div>
-
               <div className="text-xs text-muted-foreground">
-                Markets at 100,000 ticks
+                Markets at target
               </div>
             </div>
           </div>
@@ -663,7 +823,6 @@ export function Scanner({
               <span className="font-medium">
                 Overall collection
               </span>
-
               <span className="tabular-nums text-muted-foreground">
                 {totalProgress.toFixed(2)}%
               </span>
@@ -695,6 +854,7 @@ export function Scanner({
               const count = item?.count ?? 0
               const progress = item?.progress ?? 0
               const complete = count >= MAX_TICKS_PER_MARKET
+              const live = liveStats.perMarket[market.symbol]
 
               return (
                 <div key={market.symbol} className="space-y-1.5">
@@ -703,14 +863,14 @@ export function Scanner({
                       <span className="font-medium">
                         {market.name}
                       </span>
-
                       <span className="ml-2 text-xs text-muted-foreground">
                         {market.symbol}
                       </span>
                     </div>
 
                     <span className="shrink-0 tabular-nums text-xs text-muted-foreground">
-                      {count.toLocaleString()}/100,000
+                      {count.toLocaleString()}/
+                      {MAX_TICKS_PER_MARKET.toLocaleString()}
                     </span>
                   </div>
 
@@ -726,13 +886,24 @@ export function Scanner({
                     />
                   </div>
 
-                  <div className="flex justify-between text-xs text-muted-foreground">
+                  <div className="flex flex-wrap justify-between gap-2 text-xs text-muted-foreground">
                     <span>{progress.toFixed(2)}% collected</span>
 
                     <span>
-                      {complete
-                        ? 'Collection target reached'
-                        : 'Collecting'}
+                      {complete ? 'Target reached' : 'Collecting'}
+                    </span>
+
+                    <span
+                      className={cn(
+                        'font-semibold',
+                        live?.status === 'LIVE' && 'text-green-500',
+                        live?.status === 'WAITING' && 'text-yellow-500',
+                        live?.status === 'STOPPED' && 'text-muted-foreground',
+                      )}
+                    >
+                      {live?.status ?? 'WAITING'}
+                      {' · '}
+                      {(live?.rate ?? 0).toFixed(1)} ticks/s
                     </span>
                   </div>
                 </div>
@@ -742,7 +913,7 @@ export function Scanner({
 
           <p className="text-xs text-muted-foreground">
             Collection happens while the scanner is running and connected
-            to Deriv. Reaching 100,000 ticks means data collection is
+            to Deriv. Reaching the tick target means data collection is
             complete, not that a trained or validated AI model is ready.
           </p>
         </CardContent>
@@ -771,7 +942,6 @@ export function Scanner({
               {running
                 ? <Square className="fill-current" />
                 : <Play className="fill-current" />}
-
               {running ? 'Stop scan' : 'Scan all markets'}
             </Button>
           </CardAction>
@@ -851,7 +1021,6 @@ export function Scanner({
                         <div className="font-medium">
                           {market.name}
                         </div>
-
                         <div className="tabular text-xs text-muted-foreground">
                           {market.symbol} · {market.group}
                         </div>
@@ -889,11 +1058,9 @@ export function Scanner({
                             <span className="text-up">
                               {stats.hottest}
                             </span>
-
                             <span className="px-1 text-muted-foreground">
                               /
                             </span>
-
                             <span className="text-down">
                               {stats.coldest}
                             </span>
@@ -916,7 +1083,6 @@ export function Scanner({
                                   }}
                                 />
                               </div>
-
                               <span className="tabular text-xs text-muted-foreground">
                                 {stats.bias.toFixed(0)}
                               </span>
@@ -929,7 +1095,6 @@ export function Scanner({
                                 <span className="inline-flex size-7 items-center justify-center rounded-md bg-primary/15 font-bold text-primary">
                                   {stats.prediction.digit}
                                 </span>
-
                                 <span className="text-xs text-muted-foreground">
                                   {(stats.prediction.confidence * 100).toFixed(1)}%
                                 </span>
@@ -945,7 +1110,6 @@ export function Scanner({
                                 <span className="inline-flex size-7 items-center justify-center rounded-md bg-chart-3/15 font-bold text-chart-3">
                                   {md.bestDiffers}
                                 </span>
-
                                 <span className="text-xs text-muted-foreground">
                                   {differs.toFixed(1)}%
                                 </span>
@@ -959,7 +1123,6 @@ export function Scanner({
                             <div className="text-xs tabular">
                               {(stored?.count ?? 0).toLocaleString()}
                             </div>
-
                             <div className="text-xs text-muted-foreground">
                               {(stored?.progress ?? 0).toFixed(1)}%
                             </div>
