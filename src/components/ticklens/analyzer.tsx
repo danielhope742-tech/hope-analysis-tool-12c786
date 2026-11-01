@@ -39,8 +39,12 @@ import type { FeedState } from '@/hooks/use-deriv'
 import {
   analyzeWindow,
   analyzeContractEvidence,
+  predictNextDigit,
 } from '@/lib/analysis'
-import type { ContractType } from '@/lib/analysis'
+import type {
+  ContractType,
+  DigitPrediction,
+} from '@/lib/analysis'
 import type { Market } from '@/lib/markets'
 import { cn } from '@/lib/utils'
 
@@ -79,6 +83,12 @@ interface DigitRecommendation {
   digit?: number
 }
 
+interface ManualPrediction {
+  marketSymbol: string
+  tickCount: number
+  result: DigitPrediction
+}
+
 export function Analyzer({
   markets,
   market,
@@ -98,6 +108,9 @@ export function Analyzer({
   )
 
   const prediction = feed.prediction
+
+  const [manualPrediction, setManualPrediction] =
+    useState<ManualPrediction | null>(null)
 
   const latestAnalysisRef = useRef({
     feed,
@@ -209,16 +222,11 @@ export function Analyzer({
       ? (evidence.hits / evidence.tests) * 100
       : null
 
-  // IMPORTANT:
-  // These analysis values are already percentages (0–100).
-  // Do not multiply them by 100 again.
   const percent = (value: number | null | undefined) =>
     value === null || value === undefined || !Number.isFinite(value)
       ? '—'
       : `${value.toFixed(1)}%`
 
-  // Generate a recommendation for the user's selected contract.
-  // These are historical model estimates, not guaranteed next-tick results.
   const recommendation = useMemo<DigitRecommendation | null>(() => {
     if (!feed.digits.length || !feed.quotes.length) return null
 
@@ -287,6 +295,25 @@ export function Analyzer({
       description: 'Historical share of downward tick movements.',
     }
   }, [contract, feed.digits.length, feed.quotes.length, prediction, stats])
+
+  const runNextDigitPrediction = () => {
+    if (!market || feed.digits.length < 20) return
+
+    const result = predictNextDigit(feed.digits)
+
+    if (!result) return
+
+    setManualPrediction({
+      marketSymbol: market.symbol,
+      tickCount: feed.tickCount,
+      result,
+    })
+  }
+
+  const currentManualPrediction =
+    manualPrediction?.marketSymbol === market?.symbol
+      ? manualPrediction
+      : null
 
   const recentDigits = feed.digits.slice(-48)
 
@@ -484,7 +511,6 @@ export function Analyzer({
           </CardHeader>
 
           <CardContent className="space-y-5">
-            {/* LIVE DIGIT RECOMMENDATION */}
             <div className="rounded-lg border border-primary/40 bg-primary/5 p-4">
               <div className="mb-3 flex items-center gap-2">
                 <Target className="size-5 text-primary" />
@@ -560,9 +586,7 @@ export function Analyzer({
                   </Badge>
 
                   <Badge
-                    variant={
-                      signalIsStale ? 'destructive' : 'secondary'
-                    }
+                    variant={signalIsStale ? 'destructive' : 'secondary'}
                   >
                     {signalIsStale
                       ? 'STALE · new ticks received'
@@ -665,6 +689,147 @@ export function Analyzer({
           </CardContent>
         </Card>
       </div>
+
+      {/* DEDICATED NEXT-DIGIT PREDICTOR */}
+      <Card className="border-primary/40">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Brain className="size-5 text-primary" />
+            AI Next-Digit Predictor
+          </CardTitle>
+
+          <CardDescription>
+            Generate a fresh next-digit estimate using the selected
+            market's actual Deriv tick history.
+          </CardDescription>
+        </CardHeader>
+
+        <CardContent className="space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <div className="text-sm text-muted-foreground">
+                Selected market
+              </div>
+              <div className="text-lg font-bold">
+                {market?.name ?? 'No market selected'}
+                {' '}
+                <span className="text-sm text-muted-foreground">
+                  {market?.symbol}
+                </span>
+              </div>
+            </div>
+
+            <Button
+              size="lg"
+              onClick={runNextDigitPrediction}
+              disabled={!running || feed.loading || feed.digits.length < 20}
+              className="font-semibold"
+            >
+              <Brain className="size-4" />
+              PREDICT NEXT DIGIT
+            </Button>
+          </div>
+
+          {!running ? (
+            <p className="text-sm text-muted-foreground">
+              Start analysis first to receive live market ticks.
+            </p>
+          ) : feed.digits.length < 20 ? (
+            <p className="text-sm text-muted-foreground">
+              Collecting tick history. At least 20 valid digits are
+              needed before prediction.
+            </p>
+          ) : currentManualPrediction ? (
+            <>
+              <div className="rounded-xl border border-primary/40 bg-primary/5 p-4">
+                <div className="text-sm text-muted-foreground">
+                  Highest-ranked next-digit candidate
+                </div>
+
+                <div className="mt-2 flex flex-wrap items-center justify-between gap-3">
+                  <div className="text-5xl font-bold text-primary">
+                    {currentManualPrediction.result.digit}
+                  </div>
+
+                  <div className="text-right">
+                    <div className="text-2xl font-bold tabular">
+                      {(
+                        currentManualPrediction.result.confidence * 100
+                      ).toFixed(1)}%
+                    </div>
+                    <div className="text-xs text-muted-foreground">
+                      Model score
+                    </div>
+                  </div>
+                </div>
+
+                <p className="mt-3 text-xs text-muted-foreground">
+                  Calculated from {currentManualPrediction.tickCount.toLocaleString()}
+                  {' '}live ticks collected for {currentManualPrediction.marketSymbol}.
+                  New ticks may change the ranking.
+                </p>
+              </div>
+
+              <div className="space-y-3">
+                <div className="text-sm font-semibold">
+                  All ten digit estimates
+                </div>
+
+                {currentManualPrediction.result.ranked.map((digit, index) => {
+                  const score =
+                    currentManualPrediction.result.distribution[digit] * 100
+
+                  return (
+                    <div key={digit} className="space-y-1">
+                      <div className="flex items-center justify-between text-sm">
+                        <span className="flex items-center gap-2">
+                          <span className="flex size-8 items-center justify-center rounded-md border font-bold">
+                            {digit}
+                          </span>
+                          <span>
+                            {index + 1}. Digit {digit}
+                            {index === 0 ? ' · Highest' : ''}
+                          </span>
+                        </span>
+
+                        <span className="font-semibold tabular">
+                          {score.toFixed(1)}%
+                        </span>
+                      </div>
+
+                      <div className="h-2 overflow-hidden rounded-full bg-muted">
+                        <div
+                          className={cn(
+                            'h-full rounded-full transition-all',
+                            index === 0 ? 'bg-primary' : 'bg-chart-2',
+                          )}
+                          style={{
+                            width: `${Math.max(0, Math.min(100, score))}%`,
+                          }}
+                        />
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+
+              <Badge variant="outline">
+                Statistical estimate · Not a guaranteed result
+              </Badge>
+            </>
+          ) : (
+            <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
+              Press PREDICT NEXT DIGIT to calculate a fresh estimate.
+            </div>
+          )}
+
+          <p className="text-xs text-muted-foreground">
+            This button runs the existing statistical prediction engine
+            on the selected market's ticks. It does not guarantee the
+            next digit or a profitable trade.
+          </p>
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader>
