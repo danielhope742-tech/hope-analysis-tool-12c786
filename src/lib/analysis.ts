@@ -7,6 +7,8 @@ export type ContractType =
   | 'differs'
   | 'even'
   | 'odd'
+  | 'over'
+  | 'under'
   | 'rise'
   | 'fall'
 
@@ -384,6 +386,7 @@ export function outcomeOdds(
     odd: sum((d) => d % 2 === 1),
     over: sum((d) => d > barrier),
     under: sum((d) => d < barrier),
+    equalBarrier: sum((d) => d === barrier),
     matches: p[prediction.digit] * 100,
     differs: (1 - p[prediction.digit]) * 100,
   }
@@ -470,10 +473,94 @@ function wilsonLowerBound(
   return (centre - margin) / denominator
 }
 
+function probabilityForContract(
+  contract: ContractType,
+  prediction: DigitPrediction | null,
+  movement: MovementPrediction | null,
+  barrier: number,
+): number {
+  if (!prediction && !movement) return 0
+
+  const odds = prediction
+    ? outcomeOdds(prediction, barrier)
+    : null
+
+  switch (contract) {
+    case 'matches':
+      return odds?.matches ?? 0
+    case 'differs':
+      return odds?.differs ?? 0
+    case 'even':
+      return odds?.even ?? 0
+    case 'odd':
+      return odds?.odd ?? 0
+    case 'over':
+      return odds?.over ?? 0
+    case 'under':
+      return odds?.under ?? 0
+    case 'rise':
+      return movement ? movement.riseProbability * 100 : 0
+    case 'fall':
+      return movement ? movement.fallProbability * 100 : 0
+  }
+}
+
+function baselineFor(
+  contract: ContractType,
+  barrier: number,
+): number {
+  switch (contract) {
+    case 'matches':
+      return 10
+    case 'differs':
+      return 90
+    case 'even':
+    case 'odd':
+      return 50
+    case 'over':
+      return ((9 - barrier) / 10) * 100
+    case 'under':
+      return (barrier / 10) * 100
+    case 'rise':
+    case 'fall':
+      return 50
+  }
+}
+
+function selectionFor(
+  contract: ContractType,
+  prediction: DigitPrediction | null,
+  barrier: number,
+): string {
+  switch (contract) {
+    case 'matches':
+      return prediction
+        ? `Digit ${prediction.ranked[0]}`
+        : 'Matches'
+    case 'differs':
+      return prediction
+        ? `Differs ${prediction.ranked[9]}`
+        : 'Differs'
+    case 'even':
+      return 'Even'
+    case 'odd':
+      return 'Odd'
+    case 'over':
+      return `Over ${barrier}`
+    case 'under':
+      return `Under ${barrier}`
+    case 'rise':
+      return 'Rise'
+    case 'fall':
+      return 'Fall'
+  }
+}
+
 export function backtestContract(
   contract: ContractType,
   digitsInput: number[],
   quotesInput: number[],
+  barrier = 4,
 ): ContractEvidence {
   const digits = validDigits(digitsInput)
   const quotes = quotesInput.filter(Number.isFinite)
@@ -489,8 +576,13 @@ export function backtestContract(
 
   for (let i = firstTest; i < length; i++) {
     if (isMovement) {
-      const prediction = predictNextMovement(quotes.slice(0, i))
+      const history = quotes.slice(0, i)
+      const prediction = predictNextMovement(history)
+
       if (!prediction) continue
+
+      // Only count tests when the model selects this contract.
+      if (prediction.direction !== contract) continue
 
       const actual =
         quotes[i] > quotes[i - 1]
@@ -502,42 +594,99 @@ export function backtestContract(
       if (actual === null) continue
 
       tests++
-
       if (actual === contract) hits++
-    } else {
-      const prediction = predictNextDigit(digits.slice(0, i))
-      if (!prediction) continue
+      continue
+    }
 
-      const actual = digits[i]
-      let successful = false
+    const history = digits.slice(0, i)
+    const prediction = predictNextDigit(history)
 
-      switch (contract) {
-        case 'matches':
-          successful = actual === prediction.ranked[0]
-          break
-        case 'differs':
-          successful = actual !== prediction.ranked[9]
-          break
-        case 'even':
-          successful = actual % 2 === 0
-          break
-        case 'odd':
-          successful = actual % 2 === 1
-          break
+    if (!prediction) continue
+
+    const distribution = prediction.distribution
+
+    let selected = false
+    let successful = false
+
+    switch (contract) {
+      case 'matches':
+        selected = true
+        successful = digits[i] === prediction.ranked[0]
+        break
+
+      case 'differs':
+        selected = true
+        successful = digits[i] !== prediction.ranked[9]
+        break
+
+      case 'even': {
+        const evenProbability = distribution.reduce(
+          (sum, p, digit) =>
+            sum + (digit % 2 === 0 ? p : 0),
+          0,
+        )
+
+        selected = evenProbability >= 0.5
+        successful = digits[i] % 2 === 0
+        break
       }
 
-      tests++
-      if (successful) hits++
+      case 'odd': {
+        const evenProbability = distribution.reduce(
+          (sum, p, digit) =>
+            sum + (digit % 2 === 0 ? p : 0),
+          0,
+        )
+
+        selected = evenProbability < 0.5
+        successful = digits[i] % 2 === 1
+        break
+      }
+
+      case 'over': {
+        const overProbability = distribution.reduce(
+          (sum, p, digit) =>
+            sum + (digit > barrier ? p : 0),
+          0,
+        )
+
+        const underProbability = distribution.reduce(
+          (sum, p, digit) =>
+            sum + (digit < barrier ? p : 0),
+          0,
+        )
+
+        selected = overProbability >= underProbability
+        successful = digits[i] > barrier
+        break
+      }
+
+      case 'under': {
+        const overProbability = distribution.reduce(
+          (sum, p, digit) =>
+            sum + (digit > barrier ? p : 0),
+          0,
+        )
+
+        const underProbability = distribution.reduce(
+          (sum, p, digit) =>
+            sum + (digit < barrier ? p : 0),
+          0,
+        )
+
+        selected = underProbability > overProbability
+        successful = digits[i] < barrier
+        break
+      }
     }
+
+    if (!selected) continue
+
+    tests++
+    if (successful) hits++
   }
 
-  const baseline =
-    contract === 'matches'
-      ? 10
-      : contract === 'differs'
-        ? 90
-        : 50
-
+  const baseline = baselineFor(contract, barrier)
   const accuracy =
     tests > 0 ? (hits / tests) * 100 : null
 
@@ -550,18 +699,7 @@ export function backtestContract(
 
   return {
     contract,
-    selection:
-      contract === 'matches'
-        ? 'Highest estimated digit'
-        : contract === 'differs'
-          ? 'Lowest estimated digit'
-          : contract === 'even'
-            ? 'Even'
-            : contract === 'odd'
-              ? 'Odd'
-              : contract === 'rise'
-                ? 'Rise'
-                : 'Fall',
+    selection: selectionFor(contract, null, barrier),
     probability: 0,
     tests,
     hits,
@@ -572,10 +710,10 @@ export function backtestContract(
     signal: edgeDemonstrated ? 'CHECK' : 'WAIT',
     reason:
       tests < MIN_TESTS
-        ? `Only ${tests} valid tests. At least ${MIN_TESTS} are required.`
+        ? `Only ${tests} valid model-selected tests. At least ${MIN_TESTS} are required.`
         : edgeDemonstrated
           ? 'The conservative historical accuracy estimate exceeded the reference baseline. This does not guarantee the next result.'
-          : 'The historical tests have not demonstrated an edge above the reference baseline.',
+          : 'Historical tests have not demonstrated an edge above the reference baseline.',
   }
 }
 
@@ -583,8 +721,10 @@ export function analyzeContractEvidence(
   contract: ContractType,
   digitsInput: number[],
   quotesInput: number[],
+  barrier = 4,
 ): ContractEvidence {
   const digits = validDigits(digitsInput)
+
   const prediction = predictNextDigit(digits)
   const movement = predictNextMovement(quotesInput)
 
@@ -592,48 +732,15 @@ export function analyzeContractEvidence(
     contract,
     digits,
     quotesInput,
+    barrier,
   )
 
-  let probability = 0
-  let selection = evidence.selection
-
-  if (contract === 'matches' && prediction) {
-    probability =
-      prediction.distribution[prediction.ranked[0]] * 100
-    selection = `Digit ${prediction.ranked[0]}`
-  }
-
-  if (contract === 'differs' && prediction) {
-    probability =
-      (1 - prediction.distribution[prediction.ranked[9]]) * 100
-    selection = `Differs ${prediction.ranked[9]}`
-  }
-
-  if (contract === 'even' && prediction) {
-    probability =
-      prediction.distribution.reduce(
-        (sum, p, digit) =>
-          sum + (digit % 2 === 0 ? p : 0),
-        0,
-      ) * 100
-  }
-
-  if (contract === 'odd' && prediction) {
-    probability =
-      prediction.distribution.reduce(
-        (sum, p, digit) =>
-          sum + (digit % 2 === 1 ? p : 0),
-        0,
-      ) * 100
-  }
-
-  if (contract === 'rise' && movement) {
-    probability = movement.riseProbability * 100
-  }
-
-  if (contract === 'fall' && movement) {
-    probability = movement.fallProbability * 100
-  }
+  const probability = probabilityForContract(
+    contract,
+    prediction,
+    movement,
+    barrier,
+  )
 
   const hasEnoughCurrentData =
     contract === 'rise' || contract === 'fall'
@@ -642,7 +749,11 @@ export function analyzeContractEvidence(
 
   return {
     ...evidence,
-    selection,
+    selection: selectionFor(
+      contract,
+      prediction,
+      barrier,
+    ),
     probability,
     signal:
       evidence.edgeDemonstrated && hasEnoughCurrentData
