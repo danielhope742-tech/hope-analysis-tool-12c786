@@ -56,9 +56,7 @@ import type {
   SignalRecord,
 } from '@/lib/signal-performance'
 
-import {
-  trainMarketStrategies,
-} from '@/lib/ai-trainer'
+import { trainMarketStrategies } from '@/lib/ai-trainer'
 
 import type {
   MarketTrainingReport,
@@ -72,7 +70,9 @@ type SortKey =
   | 'confidence'
   | 'even'
   | 'over'
+  | 'under'
   | 'differs'
+  | 'signal'
 
 interface ScannerProps {
   markets: Market[]
@@ -87,6 +87,17 @@ interface ScannerProps {
   onBestMarketChange: (symbol: string) => void
 }
 
+const CONTRACT_LABELS: Record<ContractType, string> = {
+  matches: 'Matches',
+  differs: 'Differs',
+  even: 'Even',
+  odd: 'Odd',
+  over: 'Over',
+  under: 'Under',
+  rise: 'Rise',
+  fall: 'Fall',
+}
+
 export function Scanner({
   markets,
   entries,
@@ -99,7 +110,7 @@ export function Scanner({
   contract,
   onBestMarketChange,
 }: ScannerProps) {
-  const [sort, setSort] = useState<SortKey>('bias')
+  const [sort, setSort] = useState<SortKey>('signal')
 
   const [storageStats, setStorageStats] = useState<
     Record<string, MarketStorageStats>
@@ -117,7 +128,6 @@ export function Scanner({
 
   const [recentRecords, setRecentRecords] = useState<SignalRecord[]>([])
 
-  // AI training state
   const [training, setTraining] = useState(false)
 
   const [trainingReport, setTrainingReport] =
@@ -126,21 +136,12 @@ export function Scanner({
   const [trainingError, setTrainingError] =
     useState<string | null>(null)
 
-  const contractLabel: Record<ContractType, string> = {
-    matches: 'Matches',
-    differs: 'Differs',
-    even: 'Even',
-    odd: 'Odd',
-    rise: 'Rise',
-    fall: 'Fall',
-  }
+  const contractLabel = CONTRACT_LABELS
 
-  // Use the currently selected market for training.
   const trainingMarket =
     markets.find(market => market.symbol === activeSymbol) ??
     markets[0]
 
-  // Run the trainer using saved IndexedDB ticks.
   async function handleTrain() {
     if (!trainingMarket || training) return
 
@@ -171,7 +172,7 @@ export function Scanner({
     }
   }
 
-  // Estimate live collection speed using the latest 10 seconds.
+  // Live tick delivery over the most recent 10 seconds.
   const liveStats = useMemo(() => {
     const cutoff = Math.floor(Date.now() / 1000) - 10
 
@@ -231,7 +232,7 @@ export function Scanner({
     }
   }, [markets, entries, running])
 
-  // Find fresh markets with qualifying contract evidence.
+  // Evaluate every fresh market using the selected contract and barrier.
   const contractSignals = useMemo(() => {
     const now = Date.now()
 
@@ -252,6 +253,7 @@ export function Scanner({
           contract,
           entry.digits,
           entry.quotes,
+          barrier,
         )
 
         if (
@@ -276,7 +278,7 @@ export function Scanner({
           b.margin - a.margin ||
           b.evidence.tests - a.evidence.tests,
       )
-  }, [markets, entries, contract])
+  }, [markets, entries, contract, barrier])
 
   const strongestSignal = contractSignals[0] ?? null
 
@@ -284,6 +286,7 @@ export function Scanner({
     item => item.market.symbol === activeSymbol,
   )
 
+  // Keep the active market when its evidence is nearly as strong.
   const bestSignal =
     activeSignal &&
     strongestSignal &&
@@ -291,7 +294,6 @@ export function Scanner({
       ? activeSignal
       : strongestSignal
 
-  // Switch the main analyzer only while scanning.
   useEffect(() => {
     if (
       running &&
@@ -307,7 +309,7 @@ export function Scanner({
     onBestMarketChange,
   ])
 
-  // Record signals only while scanning.
+  // Record the current selected CHECK signal and track its outcome.
   useEffect(() => {
     for (const market of markets) {
       const entry = entries[market.symbol]
@@ -325,6 +327,7 @@ export function Scanner({
         contract,
         entry.digits,
         entry.quotes,
+        barrier,
       )
 
       const isSelectedSignal =
@@ -349,9 +352,16 @@ export function Scanner({
 
     setPerformance(getSignalPerformance())
     setRecentRecords(getSignalRecords().slice(0, 5))
-  }, [markets, entries, contract, bestSignal, running])
+  }, [
+    markets,
+    entries,
+    contract,
+    barrier,
+    bestSignal,
+    running,
+  ])
 
-  // Refresh storage statistics every three seconds.
+  // Refresh stored tick counts every three seconds.
   useEffect(() => {
     let active = true
 
@@ -411,6 +421,7 @@ export function Scanner({
     item => item.count >= MAX_TICKS_PER_MARKET,
   ).length
 
+  // Rank the market table by the selected metric.
   const rows = useMemo(() => {
     const list = markets.map(market => {
       const entry = entries[market.symbol]
@@ -420,16 +431,36 @@ export function Scanner({
           ? analyzeWindow(entry.digits, entry.quotes, barrier)
           : null
 
-      const md = stats
-        ? matchesDiffers(entry.digits, stats.prediction)
-        : null
+      const md =
+        stats && stats.prediction
+          ? matchesDiffers(entry.digits, stats.prediction)
+          : null
 
       const differs =
         md && stats?.prediction
           ? 100 - md.rows[md.bestDiffers].next
           : null
 
-      return { market, entry, stats, md, differs }
+      const evidence =
+        entry &&
+        !entry.error &&
+        entry.digits.length >= 100
+          ? analyzeContractEvidence(
+              contract,
+              entry.digits,
+              entry.quotes,
+              barrier,
+            )
+          : null
+
+      return {
+        market,
+        entry,
+        stats,
+        md,
+        differs,
+        evidence,
+      }
     })
 
     const score = (r: (typeof list)[number]) => {
@@ -438,14 +469,28 @@ export function Scanner({
       switch (sort) {
         case 'bias':
           return r.stats.bias
+
         case 'confidence':
           return r.stats.prediction?.confidence ?? 0
+
         case 'even':
           return Math.abs(r.stats.even - 50)
+
         case 'over':
-          return Math.max(r.stats.over, r.stats.under)
+          return r.stats.over
+
+        case 'under':
+          return r.stats.under
+
         case 'differs':
           return r.differs ?? 0
+
+        case 'signal':
+          return r.evidence?.signal === 'CHECK' &&
+            r.evidence.lowerBound !== null
+            ? r.evidence.lowerBound - r.evidence.baseline
+            : -1
+
         default:
           return 0
       }
@@ -454,7 +499,7 @@ export function Scanner({
     return sort === 'default'
       ? list
       : [...list].sort((a, b) => score(b) - score(a))
-  }, [markets, entries, barrier, sort])
+  }, [markets, entries, barrier, sort, contract])
 
   const loaded = Object.keys(entries).length
 
@@ -471,7 +516,10 @@ export function Scanner({
 
           <CardDescription>
             Selected contract: {contractLabel[contract]}.
-            Only fresh CHECK results with at least 100 historical tests qualify.
+            {contract === 'over' || contract === 'under'
+              ? ` Barrier: ${barrier}.`
+              : ''}
+            {' '}Only fresh CHECK results with at least 100 historical tests qualify.
           </CardDescription>
         </CardHeader>
 
@@ -490,6 +538,9 @@ export function Scanner({
                     {contractLabel[contract]}
                     {' · '}
                     {bestSignal.evidence.selection}
+                    {(contract === 'over' || contract === 'under')
+                      ? ` · Barrier ${barrier}`
+                      : ''}
                   </div>
                 </div>
 
@@ -633,7 +684,7 @@ export function Scanner({
               <div
                 className="h-full rounded-full bg-green-500 transition-all"
                 style={{
-                  width: `${Math.min(100, performance.winRate)}%`,
+                  width: `${Math.min(100, Math.max(0, performance.winRate))}%`,
                 }}
               />
             </div>
@@ -713,8 +764,8 @@ export function Scanner({
           </CardTitle>
 
           <CardDescription>
-            Tests six strategies using saved historical ticks,
-            then evaluates them on a separate unseen validation period.
+            Tests strategies using saved historical ticks and
+            evaluates them on a separate unseen validation period.
           </CardDescription>
         </CardHeader>
 
@@ -1196,11 +1247,13 @@ export function Scanner({
 
             {(
               [
+                ['signal', 'Signal quality'],
                 ['bias', 'Digit bias'],
                 ['confidence', 'Prediction confidence'],
                 ['even', 'Even/Odd skew'],
-                ['over', `Over/Under ${barrier}`],
-                ['differs', 'Matches/Differs'],
+                ['over', `Over ${barrier}`],
+                ['under', `Under ${barrier}`],
+                ['differs', 'Differs'],
                 ['default', 'Market order'],
               ] as [SortKey, string][]
             ).map(([key, label]) => (
@@ -1232,18 +1285,20 @@ export function Scanner({
                   <TableHead className="text-center">Last</TableHead>
                   <TableHead className="text-right">Even</TableHead>
                   <TableHead className="text-right">Over {barrier}</TableHead>
+                  <TableHead className="text-right">Under {barrier}</TableHead>
                   <TableHead className="text-right">Rise</TableHead>
                   <TableHead className="text-center">Hot / Cold</TableHead>
                   <TableHead>Bias</TableHead>
                   <TableHead className="text-center">Next digit</TableHead>
                   <TableHead className="text-center">Best Differs</TableHead>
+                  <TableHead className="text-center">Signal</TableHead>
                   <TableHead className="text-center">Stored ticks</TableHead>
                   <TableHead />
                 </TableRow>
               </TableHeader>
 
               <TableBody>
-                {rows.map(({ market, entry, stats, md, differs }) => {
+                {rows.map(({ market, entry, stats, md, differs, evidence }) => {
                   const quote =
                     entry?.quotes[entry.quotes.length - 1]
 
@@ -1269,7 +1324,7 @@ export function Scanner({
 
                       {entry?.error ? (
                         <TableCell
-                          colSpan={10}
+                          colSpan={12}
                           className="text-sm text-muted-foreground"
                         >
                           {entry.error}
@@ -1291,6 +1346,11 @@ export function Scanner({
                           <Pct
                             value={stats.over}
                             expected={(9 - barrier) * 10}
+                          />
+
+                          <Pct
+                            value={stats.under}
+                            expected={barrier * 10}
                           />
 
                           <Pct value={stats.rise} />
@@ -1320,7 +1380,7 @@ export function Scanner({
                                         : 'bg-muted-foreground/50',
                                   )}
                                   style={{
-                                    width: `${Math.max(4, stats.bias)}%`,
+                                    width: `${Math.max(4, Math.min(100, stats.bias))}%`,
                                   }}
                                 />
                               </div>
@@ -1361,6 +1421,16 @@ export function Scanner({
                           </TableCell>
 
                           <TableCell className="text-center">
+                            {evidence ? (
+                              <BadgeSignal signal={evidence.signal} />
+                            ) : (
+                              <span className="text-xs text-muted-foreground">
+                                WAIT
+                              </span>
+                            )}
+                          </TableCell>
+
+                          <TableCell className="text-center">
                             <div className="text-xs tabular">
                               {(stored?.count ?? 0).toLocaleString()}
                             </div>
@@ -1371,7 +1441,7 @@ export function Scanner({
                         </>
                       ) : (
                         <TableCell
-                          colSpan={10}
+                          colSpan={12}
                           className="text-sm text-muted-foreground"
                         >
                           {running
@@ -1399,9 +1469,35 @@ export function Scanner({
               </TableBody>
             </Table>
           </div>
+
+          <p className="text-xs text-muted-foreground">
+            Signal quality ranks markets using the selected contract's
+            historical lower-bound margin. A WAIT result means the evidence
+            has not met the scanner's threshold. Ranking is not a prediction
+            guarantee.
+          </p>
         </CardContent>
       </Card>
     </div>
+  )
+}
+
+function BadgeSignal({
+  signal,
+}: {
+  signal: 'CHECK' | 'WAIT'
+}) {
+  return (
+    <span
+      className={cn(
+        'rounded-md px-2 py-1 text-xs font-bold',
+        signal === 'CHECK'
+          ? 'bg-green-500/10 text-green-600'
+          : 'bg-muted text-muted-foreground',
+      )}
+    >
+      {signal}
+    </span>
   )
 }
 
