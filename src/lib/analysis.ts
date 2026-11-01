@@ -61,7 +61,6 @@ export interface ContractEvidence {
 }
 
 const DIGITS = Array.from({ length: 10 }, (_, i) => i)
-
 const MIN_TESTS = 100
 const MAX_BACKTEST_TESTS = 500
 
@@ -94,11 +93,13 @@ function countsOf(digits: number[]): number[] {
 function getGaps(digits: number[]): number[] {
   return DIGITS.map((digit) => {
     const index = digits.lastIndexOf(digit)
-
-    return index === -1
-      ? digits.length
-      : digits.length - 1 - index
+    return index === -1 ? digits.length : digits.length - 1 - index
   })
+}
+
+function clampBarrier(barrier: number): number {
+  if (!Number.isFinite(barrier)) return 4
+  return Math.max(0, Math.min(9, Math.floor(barrier)))
 }
 
 export function predictNextDigit(
@@ -109,18 +110,12 @@ export function predictNextDigit(
   if (digits.length < 20) return null
 
   const last = digits[digits.length - 1]
-
   const recent = digits.slice(-100)
   const medium = digits.slice(-500)
 
-  const longCounts = countsOf(digits)
-  const longP = normalize(longCounts.map((c) => c + 1))
-
-  const mediumCounts = countsOf(medium)
-  const mediumP = normalize(mediumCounts.map((c) => c + 1))
-
-  const recentCounts = countsOf(recent)
-  const recentP = normalize(recentCounts.map((c) => c + 1))
+  const longP = normalize(countsOf(digits).map((c) => c + 1))
+  const mediumP = normalize(countsOf(medium).map((c) => c + 1))
+  const recentP = normalize(countsOf(recent).map((c) => c + 1))
 
   const transitions = Array(10).fill(1) as number[]
   let transitionSamples = 0
@@ -158,8 +153,7 @@ export function predictNextDigit(
   const mediumWeight = 0.20
 
   const longWeight =
-    1 - recentWeight - mediumWeight -
-    transitionWeight - pairWeight
+    1 - recentWeight - mediumWeight - transitionWeight - pairWeight
 
   const distribution = normalize(
     DIGITS.map((digit) =>
@@ -172,8 +166,7 @@ export function predictNextDigit(
   )
 
   const ranked = [...DIGITS].sort(
-    (a, b) =>
-      distribution[b] - distribution[a] || a - b,
+    (a, b) => distribution[b] - distribution[a] || a - b,
   )
 
   return {
@@ -194,25 +187,19 @@ export function predictNextMovement(
   const moves: Array<'rise' | 'fall'> = []
 
   for (let i = 1; i < quotes.length; i++) {
-    if (quotes[i] > quotes[i - 1]) {
-      moves.push('rise')
-    } else if (quotes[i] < quotes[i - 1]) {
-      moves.push('fall')
-    }
+    if (quotes[i] > quotes[i - 1]) moves.push('rise')
+    else if (quotes[i] < quotes[i - 1]) moves.push('fall')
   }
 
   if (moves.length < 20) return null
 
   const recent = moves.slice(-100)
-
   const riseCount = recent.filter((m) => m === 'rise').length
   const fallCount = recent.length - riseCount
-
   const riseBase = (riseCount + 1) / (recent.length + 2)
 
   const lastMove = moves[moves.length - 1]
   const transitionCounts = { rise: 1, fall: 1 }
-
   let transitionSamples = 0
 
   for (let i = 1; i < moves.length; i++) {
@@ -228,8 +215,7 @@ export function predictNextMovement(
   const transitionRise =
     transitionCounts.rise / transitionTotal
 
-  const transitionWeight =
-    transitionSamples >= 10 ? 0.25 : 0
+  const transitionWeight = transitionSamples >= 10 ? 0.25 : 0
 
   const riseProbability =
     (1 - transitionWeight) * riseBase +
@@ -238,8 +224,7 @@ export function predictNextMovement(
   const fallProbability = 1 - riseProbability
 
   return {
-    direction:
-      riseProbability >= fallProbability ? 'rise' : 'fall',
+    direction: riseProbability >= fallProbability ? 'rise' : 'fall',
     confidence: Math.max(riseProbability, fallProbability),
     riseProbability,
     fallProbability,
@@ -252,6 +237,7 @@ export function analyzeWindow(
   barrier: number,
 ): WindowStats {
   const digits = validDigits(digitsInput)
+  const safeBarrier = clampBarrier(barrier)
   const total = digits.length
   const counts = countsOf(digits)
 
@@ -260,17 +246,14 @@ export function analyzeWindow(
   )
 
   const evenCount = digits.filter((d) => d % 2 === 0).length
-  const overCount = digits.filter((d) => d > barrier).length
-  const underCount = digits.filter((d) => d < barrier).length
+  const overCount = digits.filter((d) => d > safeBarrier).length
+  const underCount = digits.filter((d) => d < safeBarrier).length
 
   let rises = 0
   let falls = 0
 
   for (let i = 1; i < quotes.length; i++) {
-    if (
-      !Number.isFinite(quotes[i]) ||
-      !Number.isFinite(quotes[i - 1])
-    ) {
+    if (!Number.isFinite(quotes[i]) || !Number.isFinite(quotes[i - 1])) {
       continue
     }
 
@@ -295,10 +278,6 @@ export function analyzeWindow(
       )
     : 0
 
-  const evenOddStreak = streak(digits, (d) =>
-    d % 2 === 0 ? 'even' : 'odd',
-  )
-
   return {
     total,
     counts,
@@ -307,14 +286,16 @@ export function analyzeWindow(
     odd: total ? ((total - evenCount) / total) * 100 : 0,
     over: total ? (overCount / total) * 100 : 0,
     under: total ? (underCount / total) * 100 : 0,
-    equalBarrier: pct[barrier] ?? 0,
+    equalBarrier: pct[safeBarrier] ?? 0,
     rise: moves ? (rises / moves) * 100 : 0,
     fall: moves ? (falls / moves) * 100 : 0,
     hottest: ranked[0],
     coldest: ranked[9],
     gaps,
     bias: Math.min(100, (chi / 30) * 100),
-    evenOddStreak,
+    evenOddStreak: streak(digits, (d) =>
+      d % 2 === 0 ? 'even' : 'odd',
+    ),
     riseFallStreak: moveStreak(quotes),
     prediction: predictNextDigit(digits),
   }
@@ -347,15 +328,11 @@ function moveStreak(
     const current = quotes[i]
     const previous = quotes[i - 1]
 
-    if (
-      !Number.isFinite(current) ||
-      !Number.isFinite(previous)
-    ) {
+    if (!Number.isFinite(current) || !Number.isFinite(previous)) {
       break
     }
 
     const difference = current - previous
-
     if (difference === 0) break
 
     const nextKind = difference > 0 ? 'rise' : 'fall'
@@ -374,6 +351,7 @@ export function outcomeOdds(
   barrier: number,
 ) {
   const p = prediction.distribution
+  const safeBarrier = clampBarrier(barrier)
 
   const sum = (test: (digit: number) => boolean) =>
     DIGITS.filter(test).reduce(
@@ -384,11 +362,11 @@ export function outcomeOdds(
   return {
     even: sum((d) => d % 2 === 0),
     odd: sum((d) => d % 2 === 1),
-    over: sum((d) => d > barrier),
-    under: sum((d) => d < barrier),
-    equalBarrier: sum((d) => d === barrier),
-    matches: p[prediction.digit] * 100,
-    differs: (1 - p[prediction.digit]) * 100,
+    over: sum((d) => d > safeBarrier),
+    under: sum((d) => d < safeBarrier),
+    equalBarrier: p[safeBarrier] * 100,
+    matches: p[prediction.ranked[0]] * 100,
+    differs: (1 - p[prediction.ranked[9]]) * 100,
   }
 }
 
@@ -420,18 +398,13 @@ export function matchesDiffers(
 
   const rows: MatchDiffRow[] = DIGITS.map((digit) => {
     const count = digits.filter((d) => d === digit).length
-
-    const recentCount = recent.filter(
-      (d) => d === digit,
-    ).length
+    const recentCount = recent.filter((d) => d === digit).length
 
     return {
       digit,
       matches: (count / total) * 100,
       recent: (recentCount / recent.length) * 100,
-      next: prediction
-        ? prediction.distribution[digit] * 100
-        : 0,
+      next: prediction ? prediction.distribution[digit] * 100 : 0,
       gap: gaps[digit],
     }
   })
@@ -459,7 +432,6 @@ function wilsonLowerBound(
   const z = 1.96
   const p = hits / tests
   const z2 = z * z
-
   const denominator = 1 + z2 / tests
   const centre = p + z2 / (2 * tests)
 
@@ -473,42 +445,12 @@ function wilsonLowerBound(
   return (centre - margin) / denominator
 }
 
-function probabilityForContract(
-  contract: ContractType,
-  prediction: DigitPrediction | null,
-  movement: MovementPrediction | null,
-  barrier: number,
-): number {
-  if (!prediction && !movement) return 0
-
-  const odds = prediction
-    ? outcomeOdds(prediction, barrier)
-    : null
-
-  switch (contract) {
-    case 'matches':
-      return odds?.matches ?? 0
-    case 'differs':
-      return odds?.differs ?? 0
-    case 'even':
-      return odds?.even ?? 0
-    case 'odd':
-      return odds?.odd ?? 0
-    case 'over':
-      return odds?.over ?? 0
-    case 'under':
-      return odds?.under ?? 0
-    case 'rise':
-      return movement ? movement.riseProbability * 100 : 0
-    case 'fall':
-      return movement ? movement.fallProbability * 100 : 0
-  }
-}
-
-function baselineFor(
+function contractBaseline(
   contract: ContractType,
   barrier: number,
 ): number {
+  const safeBarrier = clampBarrier(barrier)
+
   switch (contract) {
     case 'matches':
       return 10
@@ -516,39 +458,33 @@ function baselineFor(
       return 90
     case 'even':
     case 'odd':
-      return 50
-    case 'over':
-      return ((9 - barrier) / 10) * 100
-    case 'under':
-      return (barrier / 10) * 100
     case 'rise':
     case 'fall':
       return 50
+    case 'over':
+      return ((9 - safeBarrier) / 10) * 100
+    case 'under':
+      return (safeBarrier / 10) * 100
   }
 }
 
-function selectionFor(
+function contractSelection(
   contract: ContractType,
-  prediction: DigitPrediction | null,
   barrier: number,
 ): string {
   switch (contract) {
     case 'matches':
-      return prediction
-        ? `Digit ${prediction.ranked[0]}`
-        : 'Matches'
+      return 'Highest estimated digit'
     case 'differs':
-      return prediction
-        ? `Differs ${prediction.ranked[9]}`
-        : 'Differs'
+      return 'Lowest estimated digit'
     case 'even':
       return 'Even'
     case 'odd':
       return 'Odd'
     case 'over':
-      return `Over ${barrier}`
+      return `Over ${clampBarrier(barrier)}`
     case 'under':
-      return `Under ${barrier}`
+      return `Under ${clampBarrier(barrier)}`
     case 'rise':
       return 'Rise'
     case 'fall':
@@ -564,10 +500,9 @@ export function backtestContract(
 ): ContractEvidence {
   const digits = validDigits(digitsInput)
   const quotes = quotesInput.filter(Number.isFinite)
+  const safeBarrier = clampBarrier(barrier)
 
-  const isMovement =
-    contract === 'rise' || contract === 'fall'
-
+  const isMovement = contract === 'rise' || contract === 'fall'
   const length = isMovement ? quotes.length : digits.length
   const firstTest = Math.max(20, length - MAX_BACKTEST_TESTS)
 
@@ -576,13 +511,8 @@ export function backtestContract(
 
   for (let i = firstTest; i < length; i++) {
     if (isMovement) {
-      const history = quotes.slice(0, i)
-      const prediction = predictNextMovement(history)
-
+      const prediction = predictNextMovement(quotes.slice(0, i))
       if (!prediction) continue
-
-      // Only count tests when the model selects this contract.
-      if (prediction.direction !== contract) continue
 
       const actual =
         quotes[i] > quotes[i - 1]
@@ -598,98 +528,51 @@ export function backtestContract(
       continue
     }
 
-    const history = digits.slice(0, i)
-    const prediction = predictNextDigit(history)
-
-    if (!prediction) continue
-
-    const distribution = prediction.distribution
-
-    let selected = false
+    const actual = digits[i]
     let successful = false
 
     switch (contract) {
-      case 'matches':
-        selected = true
-        successful = digits[i] === prediction.ranked[0]
-        break
-
-      case 'differs':
-        selected = true
-        successful = digits[i] !== prediction.ranked[9]
-        break
-
-      case 'even': {
-        const evenProbability = distribution.reduce(
-          (sum, p, digit) =>
-            sum + (digit % 2 === 0 ? p : 0),
-          0,
-        )
-
-        selected = evenProbability >= 0.5
-        successful = digits[i] % 2 === 0
+      case 'matches': {
+        const prediction = predictNextDigit(digits.slice(0, i))
+        if (!prediction) continue
+        successful = actual === prediction.ranked[0]
         break
       }
 
-      case 'odd': {
-        const evenProbability = distribution.reduce(
-          (sum, p, digit) =>
-            sum + (digit % 2 === 0 ? p : 0),
-          0,
-        )
-
-        selected = evenProbability < 0.5
-        successful = digits[i] % 2 === 1
+      case 'differs': {
+        const prediction = predictNextDigit(digits.slice(0, i))
+        if (!prediction) continue
+        successful = actual !== prediction.ranked[9]
         break
       }
 
-      case 'over': {
-        const overProbability = distribution.reduce(
-          (sum, p, digit) =>
-            sum + (digit > barrier ? p : 0),
-          0,
-        )
-
-        const underProbability = distribution.reduce(
-          (sum, p, digit) =>
-            sum + (digit < barrier ? p : 0),
-          0,
-        )
-
-        selected = overProbability >= underProbability
-        successful = digits[i] > barrier
+      case 'even':
+        successful = actual % 2 === 0
         break
-      }
 
-      case 'under': {
-        const overProbability = distribution.reduce(
-          (sum, p, digit) =>
-            sum + (digit > barrier ? p : 0),
-          0,
-        )
-
-        const underProbability = distribution.reduce(
-          (sum, p, digit) =>
-            sum + (digit < barrier ? p : 0),
-          0,
-        )
-
-        selected = underProbability > overProbability
-        successful = digits[i] < barrier
+      case 'odd':
+        successful = actual % 2 === 1
         break
-      }
+
+      case 'over':
+        successful = actual > safeBarrier
+        break
+
+      case 'under':
+        successful = actual < safeBarrier
+        break
+
+      case 'rise':
+      case 'fall':
+        break
     }
-
-    if (!selected) continue
 
     tests++
     if (successful) hits++
   }
 
-  const baseline = baselineFor(contract, barrier)
-  const accuracy =
-    tests > 0 ? (hits / tests) * 100 : null
-
+  const baseline = contractBaseline(contract, safeBarrier)
+  const accuracy = tests > 0 ? (hits / tests) * 100 : null
   const lower = wilsonLowerBound(hits, tests)
 
   const edgeDemonstrated =
@@ -699,7 +582,7 @@ export function backtestContract(
 
   return {
     contract,
-    selection: selectionFor(contract, null, barrier),
+    selection: contractSelection(contract, safeBarrier),
     probability: 0,
     tests,
     hits,
@@ -710,10 +593,10 @@ export function backtestContract(
     signal: edgeDemonstrated ? 'CHECK' : 'WAIT',
     reason:
       tests < MIN_TESTS
-        ? `Only ${tests} valid model-selected tests. At least ${MIN_TESTS} are required.`
+        ? `Only ${tests} valid tests. At least ${MIN_TESTS} are required.`
         : edgeDemonstrated
           ? 'The conservative historical accuracy estimate exceeded the reference baseline. This does not guarantee the next result.'
-          : 'Historical tests have not demonstrated an edge above the reference baseline.',
+          : 'The historical tests have not demonstrated an edge above the reference baseline.',
   }
 }
 
@@ -724,23 +607,87 @@ export function analyzeContractEvidence(
   barrier = 4,
 ): ContractEvidence {
   const digits = validDigits(digitsInput)
-
   const prediction = predictNextDigit(digits)
   const movement = predictNextMovement(quotesInput)
+  const safeBarrier = clampBarrier(barrier)
 
   const evidence = backtestContract(
     contract,
     digits,
     quotesInput,
-    barrier,
+    safeBarrier,
   )
 
-  const probability = probabilityForContract(
-    contract,
-    prediction,
-    movement,
-    barrier,
-  )
+  let probability = 0
+  let selection = evidence.selection
+
+  if (prediction) {
+    const p = prediction.distribution
+
+    switch (contract) {
+      case 'matches': {
+        const digit = prediction.ranked[0]
+        probability = p[digit] * 100
+        selection = `Digit ${digit}`
+        break
+      }
+
+      case 'differs': {
+        const digit = prediction.ranked[9]
+        probability = (1 - p[digit]) * 100
+        selection = `Differs ${digit}`
+        break
+      }
+
+      case 'even':
+        probability = p.reduce(
+          (sum, value, digit) =>
+            sum + (digit % 2 === 0 ? value : 0),
+          0,
+        ) * 100
+        break
+
+      case 'odd':
+        probability = p.reduce(
+          (sum, value, digit) =>
+            sum + (digit % 2 === 1 ? value : 0),
+          0,
+        ) * 100
+        break
+
+      case 'over':
+        probability = p.reduce(
+          (sum, value, digit) =>
+            sum + (digit > safeBarrier ? value : 0),
+          0,
+        ) * 100
+        selection = `Over ${safeBarrier}`
+        break
+
+      case 'under':
+        probability = p.reduce(
+          (sum, value, digit) =>
+            sum + (digit < safeBarrier ? value : 0),
+          0,
+        ) * 100
+        selection = `Under ${safeBarrier}`
+        break
+
+      case 'rise':
+      case 'fall':
+        break
+    }
+  }
+
+  if (movement) {
+    if (contract === 'rise') {
+      probability = movement.riseProbability * 100
+    }
+
+    if (contract === 'fall') {
+      probability = movement.fallProbability * 100
+    }
+  }
 
   const hasEnoughCurrentData =
     contract === 'rise' || contract === 'fall'
@@ -749,11 +696,7 @@ export function analyzeContractEvidence(
 
   return {
     ...evidence,
-    selection: selectionFor(
-      contract,
-      prediction,
-      barrier,
-    ),
+    selection,
     probability,
     signal:
       evidence.edgeDemonstrated && hasEnoughCurrentData
