@@ -30,21 +30,27 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+
 import {
   DigitDistribution,
   SplitBar,
   TickChart,
 } from '@/components/ticklens/charts'
+
 import type { FeedState } from '@/hooks/use-deriv'
+
 import {
   analyzeWindow,
   analyzeContractEvidence,
+  outcomeOdds,
   predictNextDigit,
 } from '@/lib/analysis'
+
 import type {
   ContractType,
   DigitPrediction,
 } from '@/lib/analysis'
+
 import type { Market } from '@/lib/markets'
 import { cn } from '@/lib/utils'
 
@@ -71,6 +77,8 @@ const CONTRACTS: { value: ContractType; label: string }[] = [
   { value: 'differs', label: 'Differs' },
   { value: 'even', label: 'Even' },
   { value: 'odd', label: 'Odd' },
+  { value: 'over', label: 'Over' },
+  { value: 'under', label: 'Under' },
   { value: 'rise', label: 'Rise' },
   { value: 'fall', label: 'Fall' },
 ]
@@ -95,6 +103,8 @@ export function Analyzer({
   onMarketChange,
   windowSize,
   onWindowSizeChange,
+  barrier,
+  onBarrierChange,
   running,
   onToggle,
   connected,
@@ -103,8 +113,8 @@ export function Analyzer({
   onContractChange,
 }: AnalyzerProps) {
   const stats = useMemo(
-    () => analyzeWindow(feed.digits, feed.quotes, 4),
-    [feed.digits, feed.quotes],
+    () => analyzeWindow(feed.digits, feed.quotes, barrier),
+    [feed.digits, feed.quotes, barrier],
   )
 
   const prediction = feed.prediction
@@ -115,17 +125,20 @@ export function Analyzer({
   const latestAnalysisRef = useRef({
     feed,
     contract,
+    barrier,
     marketSymbol: market?.symbol,
   })
 
   latestAnalysisRef.current = {
     feed,
     contract,
+    barrier,
     marketSymbol: market?.symbol,
   }
 
   const [analysisSnapshot, setAnalysisSnapshot] = useState<{
     contract: ContractType
+    barrier: number
     marketSymbol: string
     evidence: ReturnType<typeof analyzeContractEvidence>
     tickCount: number
@@ -138,18 +151,23 @@ export function Analyzer({
 
     const runAnalysis = () => {
       const current = latestAnalysisRef.current
+
       const latestEpoch =
         current.feed.epochs[current.feed.epochs.length - 1]
 
-      if (!current.marketSymbol || !current.feed.digits.length) return
+      if (!current.marketSymbol || !current.feed.digits.length) {
+        return
+      }
 
       setAnalysisSnapshot({
         contract: current.contract,
+        barrier: current.barrier,
         marketSymbol: current.marketSymbol,
         evidence: analyzeContractEvidence(
           current.contract,
           current.feed.digits,
           current.feed.quotes,
+          current.barrier,
         ),
         tickCount: current.feed.tickCount,
         latestEpoch,
@@ -166,6 +184,7 @@ export function Analyzer({
 
   const snapshotMatches =
     analysisSnapshot?.contract === contract &&
+    analysisSnapshot?.barrier === barrier &&
     analysisSnapshot?.marketSymbol === market?.symbol
 
   const evidence = snapshotMatches
@@ -257,16 +276,33 @@ export function Analyzer({
         digit,
         description: contract === 'matches'
           ? 'The digit with the highest model score.'
-          : 'The digit with the lowest model score; the complementary estimate is shown.',
+          : 'The digit with the lowest model score; complementary estimate shown.',
       }
     }
+
+    if (contract === 'rise' || contract === 'fall') {
+      const moves = stats.rise + stats.fall
+
+      if (!moves) return null
+
+      return {
+        title: `${contract === 'rise' ? 'Rise' : 'Fall'} contract estimate`,
+        selection: contract === 'rise' ? 'Rise' : 'Fall',
+        estimate: contract === 'rise' ? stats.rise : stats.fall,
+        description: 'Historical share of upward or downward tick movements.',
+      }
+    }
+
+    if (!prediction) return null
+
+    const odds = outcomeOdds(prediction, barrier)
 
     if (contract === 'even') {
       return {
         title: 'Even contract estimate',
         selection: 'Even',
-        estimate: stats.even,
-        description: 'Historical share of even last digits.',
+        estimate: odds.even,
+        description: 'Model estimate for an even last digit.',
       }
     }
 
@@ -274,27 +310,34 @@ export function Analyzer({
       return {
         title: 'Odd contract estimate',
         selection: 'Odd',
-        estimate: stats.odd,
-        description: 'Historical share of odd last digits.',
+        estimate: odds.odd,
+        description: 'Model estimate for an odd last digit.',
       }
     }
 
-    if (contract === 'rise') {
+    if (contract === 'over') {
       return {
-        title: 'Rise contract estimate',
-        selection: 'Rise',
-        estimate: stats.rise,
-        description: 'Historical share of upward tick movements.',
+        title: 'Over contract estimate',
+        selection: `Over ${barrier}`,
+        estimate: odds.over,
+        description: `Model estimate for a last digit greater than ${barrier}.`,
       }
     }
 
     return {
-      title: 'Fall contract estimate',
-      selection: 'Fall',
-      estimate: stats.fall,
-      description: 'Historical share of downward tick movements.',
+      title: 'Under contract estimate',
+      selection: `Under ${barrier}`,
+      estimate: odds.under,
+      description: `Model estimate for a last digit below ${barrier}.`,
     }
-  }, [contract, feed.digits.length, feed.quotes.length, prediction, stats])
+  }, [
+    contract,
+    feed.digits.length,
+    feed.quotes.length,
+    prediction,
+    stats,
+    barrier,
+  ])
 
   const runNextDigitPrediction = () => {
     if (!market || feed.digits.length < 20) return
@@ -322,17 +365,18 @@ export function Analyzer({
       className="space-y-4"
       aria-labelledby="analyzer-title"
     >
+      {/* MAIN CONTROLS */}
       <Card className="gap-0 py-0">
         <CardContent className="flex flex-wrap items-end gap-4 p-4">
           <div className="min-w-56 flex-1 space-y-1.5">
-            <Label htmlFor="market">Market</Label>
+            <Label htmlFor="market">Synthetic market</Label>
 
             <Select
               value={market?.symbol}
               onValueChange={onMarketChange}
             >
               <SelectTrigger id="market" className="w-full">
-                <SelectValue placeholder="Choose a synthetic market" />
+                <SelectValue placeholder="Choose a market" />
               </SelectTrigger>
 
               <SelectContent position="popper" className="max-h-80">
@@ -374,6 +418,31 @@ export function Analyzer({
             </Select>
           </div>
 
+          {(contract === 'over' || contract === 'under') && (
+            <div className="space-y-1.5">
+              <Label htmlFor="barrier">Barrier digit</Label>
+
+              <Select
+                value={String(barrier)}
+                onValueChange={(value) =>
+                  onBarrierChange(Number(value))
+                }
+              >
+                <SelectTrigger id="barrier" className="w-28">
+                  <SelectValue />
+                </SelectTrigger>
+
+                <SelectContent position="popper">
+                  {Array.from({ length: 10 }, (_, digit) => (
+                    <SelectItem key={digit} value={String(digit)}>
+                      {digit}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
+
           <div className="space-y-1.5">
             <Label htmlFor="window">Tick history</Label>
 
@@ -409,6 +478,7 @@ export function Analyzer({
         </CardContent>
       </Card>
 
+      {/* CONNECTION ERROR */}
       {feed.error && (
         <div className="rounded-lg border border-destructive/50 bg-destructive/10 px-4 py-3 text-sm">
           <span className="font-semibold">
@@ -418,6 +488,7 @@ export function Analyzer({
         </div>
       )}
 
+      {/* MARKET PRICE AND CONTRACT SIGNAL */}
       <div className="grid gap-4 lg:grid-cols-3">
         <Card className="lg:col-span-2">
           <CardHeader>
@@ -505,8 +576,8 @@ export function Analyzer({
             </CardTitle>
 
             <CardDescription>
-              Automatic analysis for your selected contract.
-              No target digit is required.
+              Statistical analysis for your selected contract.
+              No automatic trades are placed.
             </CardDescription>
           </CardHeader>
 
@@ -515,7 +586,7 @@ export function Analyzer({
               <div className="mb-3 flex items-center gap-2">
                 <Target className="size-5 text-primary" />
                 <span className="font-semibold">
-                  Live digit recommendation
+                  Live recommendation
                 </span>
               </div>
 
@@ -539,8 +610,9 @@ export function Analyzer({
 
                   <div className="flex items-center justify-between gap-2 text-sm">
                     <span className="text-muted-foreground">
-                      Historical model estimate
+                      Model estimate
                     </span>
+
                     <span className="font-bold tabular">
                       {percent(recommendation.estimate)}
                     </span>
@@ -560,7 +632,7 @@ export function Analyzer({
                   </p>
 
                   <Badge variant="outline">
-                    Model recommendation · Not guaranteed
+                    Statistical estimate · Not guaranteed
                   </Badge>
                 </div>
               ) : (
@@ -573,7 +645,7 @@ export function Analyzer({
             {!evidence ? (
               <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
                 {running
-                  ? 'Waiting for the first 6-second analysis snapshot…'
+                  ? 'Waiting for the next analysis snapshot…'
                   : 'Press Start analysis to begin the 6-second analysis cycle.'}
               </div>
             ) : (
@@ -604,7 +676,8 @@ export function Analyzer({
                   </div>
 
                   <div className="text-xs text-muted-foreground">
-                    Analysed:{' '}
+                    Barrier: {barrier}
+                    {' · '}Analysed:{' '}
                     {analysisSnapshot
                       ? new Date(
                           analysisSnapshot.updatedAt,
@@ -679,10 +752,9 @@ export function Analyzer({
                 <p className="text-xs text-muted-foreground">
                   CHECK means the historical test met the model's
                   statistical threshold. WAIT means the evidence is
-                  insufficient. The recommendation is a historical
-                  estimate, not a guarantee of the next tick.
+                  insufficient. Neither guarantees the next result.
                   STALE means new ticks arrived after this snapshot;
-                  wait for the next 6-second refresh.
+                  wait for the next refresh.
                 </p>
               </>
             )}
@@ -690,12 +762,12 @@ export function Analyzer({
         </Card>
       </div>
 
-      {/* DEDICATED NEXT-DIGIT PREDICTOR */}
+      {/* NEXT DIGIT PREDICTOR */}
       <Card className="border-primary/40">
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <Brain className="size-5 text-primary" />
-            AI Next-Digit Predictor
+            Next-Digit Predictor
           </CardTitle>
 
           <CardDescription>
@@ -710,6 +782,7 @@ export function Analyzer({
               <div className="text-sm text-muted-foreground">
                 Selected market
               </div>
+
               <div className="text-lg font-bold">
                 {market?.name ?? 'No market selected'}
                 {' '}
@@ -757,6 +830,7 @@ export function Analyzer({
                         currentManualPrediction.result.confidence * 100
                       ).toFixed(1)}%
                     </div>
+
                     <div className="text-xs text-muted-foreground">
                       Model score
                     </div>
@@ -786,6 +860,7 @@ export function Analyzer({
                           <span className="flex size-8 items-center justify-center rounded-md border font-bold">
                             {digit}
                           </span>
+
                           <span>
                             {index + 1}. Digit {digit}
                             {index === 0 ? ' · Highest' : ''}
@@ -824,13 +899,13 @@ export function Analyzer({
           )}
 
           <p className="text-xs text-muted-foreground">
-            This button runs the existing statistical prediction engine
-            on the selected market's ticks. It does not guarantee the
-            next digit or a profitable trade.
+            This uses the existing statistical prediction engine.
+            It does not guarantee the next digit or a profitable trade.
           </p>
         </CardContent>
       </Card>
 
+      {/* LIVE MODEL ACCURACY */}
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
@@ -883,6 +958,7 @@ export function Analyzer({
         </CardContent>
       </Card>
 
+      {/* PREDICTION HISTORY */}
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
@@ -892,7 +968,6 @@ export function Analyzer({
 
           <CardDescription>
             Compares previous digit predictions with actual live ticks.
-            This is digit-model history, not contract history.
           </CardDescription>
         </CardHeader>
 
@@ -989,14 +1064,13 @@ export function Analyzer({
 
               <p className="mt-1 text-sm text-muted-foreground">
                 Start analysis and wait for new live ticks.
-                History appears when a prediction can be compared
-                with an actual tick.
               </p>
             </div>
           )}
         </CardContent>
       </Card>
 
+      {/* DIGIT RANKING */}
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
@@ -1089,28 +1163,25 @@ export function Analyzer({
 
               <p className="text-xs text-muted-foreground">
                 Model scores are derived from past ticks, not verified
-                probabilities. Synthetic market digits may remain
-                unpredictable.
+                probabilities. Synthetic market digits may remain unpredictable.
               </p>
             </>
           ) : (
             <p className="text-sm text-muted-foreground">
-              Start analysis and wait for at least 20 valid ticks
-              to load the digit ranking.
+              Start analysis and wait for at least 20 valid ticks.
             </p>
           )}
         </CardContent>
       </Card>
 
+      {/* DIGIT HEATMAP */}
       <Card>
         <CardHeader>
-          <CardTitle>Last digit distribution</CardTitle>
+          <CardTitle>Digit heat map</CardTitle>
 
           <CardDescription>
-            Share of each last digit over the last{' '}
-            {stats.total.toLocaleString()} ticks. Green marks the
-            most frequent digit; red marks the least frequent.
-            Historical frequency does not guarantee the next digit.
+            Frequency of each last digit over the selected tick window.
+            Green marks the most frequent digit; red marks the least frequent.
           </CardDescription>
         </CardHeader>
 
@@ -1126,6 +1197,7 @@ export function Analyzer({
         </CardContent>
       </Card>
 
+      {/* PARITY AND MOVEMENT */}
       <div className="grid gap-4 md:grid-cols-2">
         <Card>
           <CardHeader>
@@ -1172,6 +1244,7 @@ export function Analyzer({
         </Card>
       </div>
 
+      {/* RECENT DIGITS AND GAPS */}
       <Card>
         <CardHeader>
           <CardTitle className="text-base">
