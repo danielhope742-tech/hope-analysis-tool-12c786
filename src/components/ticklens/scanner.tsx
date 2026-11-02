@@ -1,78 +1,19 @@
-
 import { useEffect, useMemo, useState } from 'react'
-import {
-  ArrowRight,
-  Loader2,
-  Play,
-  Radar,
-  Square,
-  Database,
-  BrainCircuit,
-  Activity,
-} from 'lucide-react'
-
-import { Button } from '@/components/ui/button'
-import {
-  Card,
-  CardAction,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from '@/components/ui/card'
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table'
+import { Activity, Play, Square } from 'lucide-react'
 
 import type { ScanEntry } from '@/hooks/use-deriv'
 import {
-  analyzeWindow,
-  matchesDiffers,
-  analyzeContractEvidence,
+  analyzeContractEvidenceAtDuration,
+  type ContractType,
 } from '@/lib/analysis'
-import type { ContractType } from '@/lib/analysis'
 import type { Market } from '@/lib/markets'
-
-import {
-  getMarketStorageStats,
-  getTicks,
-  MAX_TICKS_PER_MARKET,
-  type MarketStorageStats,
-} from '@/lib/tick-storage'
-
 import {
   processSignalSnapshot,
   getSignalPerformance,
   getSignalRecords,
+  type PerformanceStats,
+  type SignalRecord,
 } from '@/lib/signal-performance'
-
-import type {
-  PerformanceStats,
-  SignalRecord,
-} from '@/lib/signal-performance'
-
-import { trainMarketStrategies } from '@/lib/ai-trainer'
-
-import type {
-  MarketTrainingReport,
-} from '@/lib/ai-trainer'
-
-import { cn } from '@/lib/utils'
-
-type SortKey =
-  | 'default'
-  | 'bias'
-  | 'confidence'
-  | 'even'
-  | 'over'
-  | 'under'
-  | 'differs'
-  | 'signal'
 
 interface ScannerProps {
   markets: Market[]
@@ -98,6 +39,14 @@ const CONTRACT_LABELS: Record<ContractType, string> = {
   fall: 'Fall',
 }
 
+const EMPTY_PERFORMANCE: PerformanceStats = {
+  total: 0,
+  wins: 0,
+  losses: 0,
+  pending: 0,
+  winRate: 0,
+}
+
 export function Scanner({
   markets,
   entries,
@@ -110,1414 +59,369 @@ export function Scanner({
   contract,
   onBestMarketChange,
 }: ScannerProps) {
-  const [sort, setSort] = useState<SortKey>('signal')
+  const [performance, setPerformance] =
+    useState<PerformanceStats>(EMPTY_PERFORMANCE)
 
-  const [storageStats, setStorageStats] = useState<
-    Record<string, MarketStorageStats>
-  >({})
+  const [records, setRecords] = useState<SignalRecord[]>([])
 
-  const [storageError, setStorageError] = useState<string | null>(null)
-
-  const [performance, setPerformance] = useState<PerformanceStats>({
-    total: 0,
-    wins: 0,
-    losses: 0,
-    pending: 0,
-    winRate: 0,
-  })
-
-  const [recentRecords, setRecentRecords] = useState<SignalRecord[]>([])
-
-  const [training, setTraining] = useState(false)
-
-  const [trainingReport, setTrainingReport] =
-    useState<MarketTrainingReport | null>(null)
-
-  const [trainingError, setTrainingError] =
-    useState<string | null>(null)
-
-  const contractLabel = CONTRACT_LABELS
-
-  const trainingMarket =
-    markets.find(market => market.symbol === activeSymbol) ??
-    markets[0]
-
-  async function handleTrain() {
-    if (!trainingMarket || training) return
-
-    setTraining(true)
-    setTrainingError(null)
-    setTrainingReport(null)
-
-    try {
-      const ticks = await getTicks(
-        trainingMarket.symbol,
-        5000,
-      )
-
-      const report = trainMarketStrategies(
-        trainingMarket.symbol,
-        ticks,
-      )
-
-      setTrainingReport(report)
-    } catch (error) {
-      setTrainingError(
-        error instanceof Error
-          ? error.message
-          : 'Training could not be completed.',
-      )
-    } finally {
-      setTraining(false)
-    }
-  }
-
-  // Live tick delivery over the most recent 10 seconds.
-  const liveStats = useMemo(() => {
-    const cutoff = Math.floor(Date.now() / 1000) - 10
-
-    let totalTicksPerSecond = 0
-    let liveMarkets = 0
-    let waitingMarkets = 0
-
-    const perMarket: Record<
-      string,
-      {
-        rate: number
-        status: 'LIVE' | 'WAITING' | 'STOPPED'
-      }
-    > = {}
-
-    for (const market of markets) {
+  const rows = useMemo(() => {
+    return markets.map((market) => {
       const entry = entries[market.symbol]
 
-      if (!running) {
-        perMarket[market.symbol] = {
-          rate: 0,
-          status: 'STOPPED',
-        }
-        continue
-      }
-
-      const recentCount = entry?.epochs
-        ? entry.epochs.filter(epoch => epoch >= cutoff).length
-        : 0
-
-      const rate = recentCount / 10
-
-      const fresh =
+      const ready =
         !!entry &&
         !entry.error &&
-        Date.now() - entry.updatedAt <= 15000
+        entry.digits.length >= 100 &&
+        entry.quotes.length >= 100 &&
+        !!entry.epochs &&
+        entry.epochs.length >= 100
 
-      const status =
-        fresh && recentCount > 0 ? 'LIVE' : 'WAITING'
+      const evidence = ready
+        ? analyzeContractEvidenceAtDuration(
+            contract,
+            entry.digits,
+            entry.quotes,
+            entry.epochs!,
+            barrier,
+            10,
+          )
+        : null
 
-      perMarket[market.symbol] = { rate, status }
+      return { market, entry, evidence, ready }
+    }).sort((a, b) => {
+      const aScore =
+        a.evidence?.lowerBound != null
+          ? a.evidence.lowerBound - a.evidence.baseline
+          : -Infinity
 
-      totalTicksPerSecond += rate
+      const bScore =
+        b.evidence?.lowerBound != null
+          ? b.evidence.lowerBound - b.evidence.baseline
+          : -Infinity
 
-      if (status === 'LIVE') {
-        liveMarkets++
-      } else {
-        waitingMarkets++
-      }
-    }
-
-    return {
-      perMarket,
-      totalTicksPerSecond,
-      liveMarkets,
-      waitingMarkets,
-    }
-  }, [markets, entries, running])
-
-  // Evaluate every fresh market using the selected contract and barrier.
-  const contractSignals = useMemo(() => {
-    const now = Date.now()
-
-    return markets
-      .map(market => {
-        const entry = entries[market.symbol]
-
-        if (
-          !entry ||
-          entry.error ||
-          entry.digits.length < 100 ||
-          now - entry.updatedAt > 15000
-        ) {
-          return null
-        }
-
-        const evidence = analyzeContractEvidence(
-          contract,
-          entry.digits,
-          entry.quotes,
-          barrier,
-        )
-
-        if (
-          evidence.signal !== 'CHECK' ||
-          evidence.lowerBound === null
-        ) {
-          return null
-        }
-
-        return {
-          market,
-          evidence,
-          margin: evidence.lowerBound - evidence.baseline,
-        }
-      })
-      .filter(
-        (item): item is NonNullable<typeof item> =>
-          item !== null,
-      )
-      .sort(
-        (a, b) =>
-          b.margin - a.margin ||
-          b.evidence.tests - a.evidence.tests,
-      )
+      return bScore - aScore
+    })
   }, [markets, entries, contract, barrier])
 
-  const strongestSignal = contractSignals[0] ?? null
-
-  const activeSignal = contractSignals.find(
-    item => item.market.symbol === activeSymbol,
-  )
-
-  // Keep the active market when its evidence is nearly as strong.
-  const bestSignal =
-    activeSignal &&
-    strongestSignal &&
-    strongestSignal.margin - activeSignal.margin <= 0.01
-      ? activeSignal
-      : strongestSignal
-
+  // Track CHECK signals and settle pending signals at expiry.
   useEffect(() => {
-    if (
-      running &&
-      bestSignal &&
-      bestSignal.market.symbol !== activeSymbol
-    ) {
-      onBestMarketChange(bestSignal.market.symbol)
-    }
-  }, [
-    running,
-    bestSignal,
-    activeSymbol,
-    onBestMarketChange,
-  ])
+    let changed = false
 
-  // Record the current selected CHECK signal and track its outcome.
-  useEffect(() => {
-    for (const market of markets) {
-      const entry = entries[market.symbol]
+    for (const row of rows) {
+      const { market, entry, evidence } = row
 
       if (
         !entry ||
-        entry.error ||
         !entry.epochs ||
-        entry.epochs.length === 0
+        !evidence
       ) {
         continue
       }
 
-      const evidence = analyzeContractEvidence(
-        contract,
-        entry.digits,
-        entry.quotes,
-        barrier,
-      )
-
-      const isSelectedSignal =
-        running &&
-        bestSignal?.market.symbol === market.symbol &&
-        evidence.signal === 'CHECK' &&
-        evidence.lowerBound !== null
-
       processSignalSnapshot({
         market: market.symbol,
         contract,
-        selection: String(evidence.selection ?? ''),
-        signal: isSelectedSignal ? 'CHECK' : 'WAIT',
-        probability: evidence.probability ?? 0,
-        baseline: evidence.baseline ?? 0,
+        selection: evidence.selection,
+        signal: evidence.signal,
+        probability: evidence.probability,
+        baseline: evidence.baseline,
         lowerBound: evidence.lowerBound ?? 0,
         quotes: entry.quotes,
         digits: entry.digits,
         epochs: entry.epochs,
+        barrier,
+        durationSeconds: 10,
       })
+
+      changed = true
     }
 
+    if (changed) {
+      setPerformance(getSignalPerformance())
+      setRecords(getSignalRecords().slice(0, 8))
+    }
+  }, [rows, contract, barrier])
+
+  useEffect(() => {
     setPerformance(getSignalPerformance())
-    setRecentRecords(getSignalRecords().slice(0, 5))
+    setRecords(getSignalRecords().slice(0, 8))
+  }, [])
+
+  const bestRow =
+    rows.find(row => row.evidence?.signal === 'CHECK') ??
+    rows[0]
+
+  useEffect(() => {
+    if (
+      bestRow?.market.symbol &&
+      bestRow.evidence?.signal === 'CHECK'
+    ) {
+      onBestMarketChange(bestRow.market.symbol)
+    }
   }, [
-    markets,
-    entries,
-    contract,
-    barrier,
-    bestSignal,
-    running,
+    bestRow?.market.symbol,
+    bestRow?.evidence?.signal,
+    onBestMarketChange,
   ])
 
-  // Refresh stored tick counts every three seconds.
-  useEffect(() => {
-    let active = true
-
-    async function refreshStorage() {
-      try {
-        const results = await Promise.all(
-          markets.map(market =>
-            getMarketStorageStats(market.symbol),
-          ),
-        )
-
-        if (!active) return
-
-        const next: Record<string, MarketStorageStats> = {}
-
-        for (const result of results) {
-          next[result.market] = result
-        }
-
-        setStorageStats(next)
-        setStorageError(null)
-      } catch (error) {
-        if (!active) return
-
-        setStorageError(
-          error instanceof Error
-            ? error.message
-            : 'Could not read tick storage.',
-        )
-      }
-    }
-
-    void refreshStorage()
-
-    const timer = setInterval(() => {
-      void refreshStorage()
-    }, 3000)
-
-    return () => {
-      active = false
-      clearInterval(timer)
-    }
-  }, [markets])
-
-  const totalStored = Object.values(storageStats).reduce(
-    (sum, item) => sum + item.count,
-    0,
-  )
-
-  const totalTarget = markets.length * MAX_TICKS_PER_MARKET
-
-  const totalProgress = totalTarget
-    ? (totalStored / totalTarget) * 100
-    : 0
-
-  const readyMarkets = Object.values(storageStats).filter(
-    item => item.count >= MAX_TICKS_PER_MARKET,
+  const liveCount = rows.filter(
+    row =>
+      row.entry &&
+      !row.entry.error &&
+      Date.now() - row.entry.updatedAt < 15000,
   ).length
 
-  // Rank the market table by the selected metric.
-  const rows = useMemo(() => {
-    const list = markets.map(market => {
-      const entry = entries[market.symbol]
-
-      const stats =
-        entry && !entry.error
-          ? analyzeWindow(entry.digits, entry.quotes, barrier)
-          : null
-
-      const md =
-        stats && stats.prediction
-          ? matchesDiffers(entry.digits, stats.prediction)
-          : null
-
-      const differs =
-        md && stats?.prediction
-          ? 100 - md.rows[md.bestDiffers].next
-          : null
-
-      const evidence =
-        entry &&
-        !entry.error &&
-        entry.digits.length >= 100
-          ? analyzeContractEvidence(
-              contract,
-              entry.digits,
-              entry.quotes,
-              barrier,
-            )
-          : null
-
-      return {
-        market,
-        entry,
-        stats,
-        md,
-        differs,
-        evidence,
-      }
-    })
-
-    const score = (r: (typeof list)[number]) => {
-      if (!r.stats) return -1
-
-      switch (sort) {
-        case 'bias':
-          return r.stats.bias
-
-        case 'confidence':
-          return r.stats.prediction?.confidence ?? 0
-
-        case 'even':
-          return Math.abs(r.stats.even - 50)
-
-        case 'over':
-          return r.stats.over
-
-        case 'under':
-          return r.stats.under
-
-        case 'differs':
-          return r.differs ?? 0
-
-        case 'signal':
-          return r.evidence?.signal === 'CHECK' &&
-            r.evidence.lowerBound !== null
-            ? r.evidence.lowerBound - r.evidence.baseline
-            : -1
-
-        default:
-          return 0
-      }
-    }
-
-    return sort === 'default'
-      ? list
-      : [...list].sort((a, b) => score(b) - score(a))
-  }, [markets, entries, barrier, sort, contract])
-
-  const loaded = Object.keys(entries).length
-
   return (
-    <div className="space-y-4">
+    <section className="space-y-4">
 
-      {/* BEST-MARKET CONTRACT SCANNER */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Radar className="size-5 text-primary" />
-            Best-market signal scanner
-          </CardTitle>
+      {/* Scanner controls */}
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border p-4">
+        <div>
+          <div className="flex items-center gap-2 font-semibold">
+            <Activity className="h-5 w-5" />
+            10-second market scanner
+          </div>
 
-          <CardDescription>
-            Selected contract: {contractLabel[contract]}.
-            {contract === 'over' || contract === 'under'
-              ? ` Barrier: ${barrier}.`
-              : ''}
-            {' '}Only fresh CHECK results with at least 100 historical tests qualify.
-          </CardDescription>
-        </CardHeader>
+          <p className="text-sm text-muted-foreground">
+            {liveCount} of {markets.length} markets reporting fresh ticks
+          </p>
 
-        <CardContent className="space-y-3">
-          {bestSignal ? (
+          <p className="text-xs text-muted-foreground">
+            Contract: {CONTRACT_LABELS[contract]} ·
+            Barrier: {barrier} ·
+            Window: {windowSize} ticks
+          </p>
+        </div>
+
+        <button
+          type="button"
+          onClick={onToggle}
+          className="inline-flex items-center gap-2 rounded-lg border px-4 py-2 text-sm font-medium"
+        >
+          {running ? (
             <>
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div>
-                  <div className="text-lg font-bold">
-                    {bestSignal.market.name}
-                  </div>
-
-                  <div className="text-xs text-muted-foreground">
-                    {bestSignal.market.symbol}
-                    {' · '}
-                    {contractLabel[contract]}
-                    {' · '}
-                    {bestSignal.evidence.selection}
-                    {(contract === 'over' || contract === 'under')
-                      ? ` · Barrier ${barrier}`
-                      : ''}
-                  </div>
-                </div>
-
-                <span className="rounded-md bg-primary/10 px-3 py-1.5 text-sm font-bold text-primary">
-                  CHECK SIGNAL FOUND
-                </span>
-              </div>
-
-              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-                <div className="rounded-md border p-2">
-                  <div className="text-xs text-muted-foreground">
-                    Model estimate
-                  </div>
-                  <div className="font-semibold tabular-nums">
-                    {bestSignal.evidence.probability.toFixed(1)}%
-                  </div>
-                </div>
-
-                <div className="rounded-md border p-2">
-                  <div className="text-xs text-muted-foreground">
-                    Historical tests
-                  </div>
-                  <div className="font-semibold tabular-nums">
-                    {bestSignal.evidence.tests.toLocaleString()}
-                  </div>
-                </div>
-
-                <div className="rounded-md border p-2">
-                  <div className="text-xs text-muted-foreground">
-                    Historical accuracy
-                  </div>
-                  <div className="font-semibold tabular-nums">
-                    {bestSignal.evidence.accuracy === null
-                      ? '—'
-                      : `${bestSignal.evidence.accuracy.toFixed(1)}%`}
-                  </div>
-                </div>
-
-                <div className="rounded-md border p-2">
-                  <div className="text-xs text-muted-foreground">
-                    95% lower bound
-                  </div>
-                  <div className="font-semibold tabular-nums">
-                    {bestSignal.evidence.lowerBound!.toFixed(1)}%
-                  </div>
-                </div>
-              </div>
-
-              <p className="text-sm text-muted-foreground">
-                {bestSignal.evidence.reason}
-              </p>
-
-              <p className="text-xs text-muted-foreground">
-                {running
-                  ? 'Scanner is running. The main analyzer will switch to this market when it qualifies.'
-                  : 'Start Scan all markets to enable automatic market switching.'}
-                {' '}
-                A CHECK is historical statistical evidence, not a guarantee
-                of the next result.
-              </p>
+              <Square className="h-4 w-4" />
+              Stop scanner
             </>
           ) : (
-            <div className="rounded-lg border border-dashed p-4">
-              <div className="font-semibold">
-                NO CHECK SIGNAL
-              </div>
-              <p className="mt-1 text-sm text-muted-foreground">
-                No market currently meets the selected contract's
-                historical threshold with fresh data. The scanner
-                will not invent a signal.
-              </p>
-            </div>
+            <>
+              <Play className="h-4 w-4" />
+              Start scanner
+            </>
           )}
-        </CardContent>
-      </Card>
+        </button>
+      </div>
 
-      {/* SIGNAL PERFORMANCE DASHBOARD */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Activity className="size-5 text-primary" />
-            Signal performance tracker
-          </CardTitle>
+      {/* Performance summary */}
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <Metric
+          label="Settled signals"
+          value={performance.total}
+        />
 
-          <CardDescription>
-            Tracks selected CHECK signals and compares them with
-            the next actual tick. Results are saved on this device.
-          </CardDescription>
-        </CardHeader>
+        <Metric
+          label="Wins"
+          value={performance.wins}
+        />
 
-        <CardContent className="space-y-4">
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-            <div className="rounded-lg border p-3">
-              <div className="text-xs text-muted-foreground">
-                Settled signals
-              </div>
-              <div className="mt-1 text-2xl font-bold tabular-nums">
-                {performance.total}
-              </div>
-            </div>
+        <Metric
+          label="Losses"
+          value={performance.losses}
+        />
 
-            <div className="rounded-lg border p-3">
-              <div className="text-xs text-muted-foreground">
-                Wins
-              </div>
-              <div className="mt-1 text-2xl font-bold tabular-nums text-green-500">
-                {performance.wins}
-              </div>
-            </div>
+        <Metric
+          label="Win rate"
+          value={`${performance.winRate.toFixed(1)}%`}
+        />
+      </div>
 
-            <div className="rounded-lg border p-3">
-              <div className="text-xs text-muted-foreground">
-                Losses
-              </div>
-              <div className="mt-1 text-2xl font-bold tabular-nums text-destructive">
-                {performance.losses}
-              </div>
-            </div>
+      {/* Market results */}
+      <div className="rounded-xl border">
 
-            <div className="rounded-lg border p-3">
-              <div className="text-xs text-muted-foreground">
-                Pending
-              </div>
-              <div className="mt-1 text-2xl font-bold tabular-nums">
-                {performance.pending}
-              </div>
-            </div>
-          </div>
+        <div className="border-b p-4">
+          <h3 className="font-semibold">
+            Market scan results
+          </h3>
 
-          <div className="rounded-lg border p-3">
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-sm font-medium">
-                Measured win rate
-              </span>
-              <span className="text-lg font-bold tabular-nums">
-                {performance.winRate.toFixed(1)}%
-              </span>
-            </div>
-
-            <div className="mt-2 h-2 overflow-hidden rounded-full bg-muted">
-              <div
-                className="h-full rounded-full bg-green-500 transition-all"
-                style={{
-                  width: `${Math.min(100, Math.max(0, performance.winRate))}%`,
-                }}
-              />
-            </div>
-
-            <p className="mt-2 text-xs text-muted-foreground">
-              Based only on settled tracker records. Pending signals
-              are excluded. This is historical measurement, not a
-              guarantee of future performance.
-            </p>
-          </div>
-
-          <div className="space-y-2">
-            <div className="font-semibold text-sm">
-              Recent signal results
-            </div>
-
-            {recentRecords.length === 0 ? (
-              <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
-                No signals recorded yet. Start the scanner and wait
-                for a qualifying CHECK SIGNAL.
-              </div>
-            ) : (
-              <div className="overflow-x-auto rounded-lg border">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Market</TableHead>
-                      <TableHead>Contract</TableHead>
-                      <TableHead>Selection</TableHead>
-                      <TableHead>Result</TableHead>
-                    </TableRow>
-                  </TableHeader>
-
-                  <TableBody>
-                    {recentRecords.map(record => (
-                      <TableRow key={record.id}>
-                        <TableCell className="font-medium">
-                          {record.market}
-                        </TableCell>
-                        <TableCell className="capitalize">
-                          {record.contract}
-                        </TableCell>
-                        <TableCell>
-                          {record.selection || '—'}
-                        </TableCell>
-                        <TableCell>
-                          <span
-                            className={cn(
-                              'rounded-md px-2 py-1 text-xs font-bold',
-                              record.status === 'WIN' &&
-                                'bg-green-500/10 text-green-600',
-                              record.status === 'LOSS' &&
-                                'bg-destructive/10 text-destructive',
-                              record.status === 'PENDING' &&
-                                'bg-muted text-muted-foreground',
-                            )}
-                          >
-                            {record.status}
-                          </span>
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </div>
-            )}
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* SMART AI STRATEGY TRAINER */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <BrainCircuit className="size-5 text-primary" />
-            Smart AI Strategy Trainer
-          </CardTitle>
-
-          <CardDescription>
-            Tests strategies using saved historical ticks and
-            evaluates them on a separate unseen validation period.
-          </CardDescription>
-        </CardHeader>
-
-        <CardContent className="space-y-4">
-          <div className="rounded-lg border p-3">
-            <div className="text-xs text-muted-foreground">
-              Selected training market
-            </div>
-
-            <div className="mt-1 font-bold">
-              {trainingMarket
-                ? `${trainingMarket.name} (${trainingMarket.symbol})`
-                : 'No market available'}
-            </div>
-
-            <p className="mt-1 text-xs text-muted-foreground">
-              Uses up to 5,000 saved ticks from this market.
-              Select a different market in the main analyzer to train it.
-            </p>
-          </div>
-
-          <Button
-            className="w-full"
-            onClick={handleTrain}
-            disabled={training || !trainingMarket}
-          >
-            {training ? (
-              <>
-                <Loader2 className="mr-2 size-4 animate-spin" />
-                Training strategies...
-              </>
-            ) : (
-              <>
-                <BrainCircuit className="mr-2 size-4" />
-                TRAIN SELECTED MARKET
-              </>
-            )}
-          </Button>
-
-          {trainingError && (
-            <p className="text-sm text-destructive">
-              {trainingError}
-            </p>
-          )}
-
-          {trainingReport && (
-            <div className="space-y-4">
-              <div className="rounded-lg border p-3">
-                <div className="font-semibold">
-                  Training report: {trainingReport.market}
-                </div>
-
-                <p className="mt-1 text-sm text-muted-foreground">
-                  {trainingReport.message}
-                </p>
-
-                <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3">
-                  <div className="rounded-md bg-muted p-2">
-                    <div className="text-xs text-muted-foreground">
-                      Unique ticks
-                    </div>
-                    <div className="font-bold tabular-nums">
-                      {trainingReport.uniqueTicks.toLocaleString()}
-                    </div>
-                  </div>
-
-                  <div className="rounded-md bg-muted p-2">
-                    <div className="text-xs text-muted-foreground">
-                      Training ticks
-                    </div>
-                    <div className="font-bold tabular-nums">
-                      {trainingReport.trainingTicks.toLocaleString()}
-                    </div>
-                  </div>
-
-                  <div className="rounded-md bg-muted p-2">
-                    <div className="text-xs text-muted-foreground">
-                      Validation ticks
-                    </div>
-                    <div className="font-bold tabular-nums">
-                      {trainingReport.validationTicks.toLocaleString()}
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <div className="space-y-2">
-                <div className="font-semibold text-sm">
-                  Strategy validation results
-                </div>
-
-                {trainingReport.strategies.map(strategy => (
-                  <div
-                    key={strategy.contract}
-                    className="space-y-2 rounded-lg border p-3"
-                  >
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <span className="font-semibold capitalize">
-                        {strategy.contract}
-                      </span>
-
-                      <span
-                        className={cn(
-                          'rounded-md px-2 py-1 text-xs font-bold',
-                          strategy.status === 'VALIDATION_EDGE' &&
-                            'bg-green-500/10 text-green-600',
-                          strategy.status === 'NO_VALIDATION_EDGE' &&
-                            'bg-destructive/10 text-destructive',
-                          strategy.status === 'INSUFFICIENT_VALIDATION' &&
-                            'bg-muted text-muted-foreground',
-                        )}
-                      >
-                        {strategy.status === 'VALIDATION_EDGE'
-                          ? 'PASSED VALIDATION'
-                          : strategy.status === 'NO_VALIDATION_EDGE'
-                            ? 'NO EDGE DEMONSTRATED'
-                            : 'MORE TESTS NEEDED'}
-                      </span>
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-2">
-                      <div className="rounded-md bg-muted p-2">
-                        <div className="text-xs text-muted-foreground">
-                          Training accuracy
-                        </div>
-                        <div className="font-bold tabular-nums">
-                          {strategy.training.accuracy === null
-                            ? '—'
-                            : `${strategy.training.accuracy.toFixed(1)}%`}
-                        </div>
-                        <div className="text-xs text-muted-foreground">
-                          {strategy.training.tests} tests
-                        </div>
-                      </div>
-
-                      <div className="rounded-md bg-muted p-2">
-                        <div className="text-xs text-muted-foreground">
-                          Validation accuracy
-                        </div>
-                        <div className="font-bold tabular-nums">
-                          {strategy.validation.accuracy === null
-                            ? '—'
-                            : `${strategy.validation.accuracy.toFixed(1)}%`}
-                        </div>
-                        <div className="text-xs text-muted-foreground">
-                          {strategy.validation.tests} tests
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="text-xs text-muted-foreground">
-                      Reference baseline: {strategy.validation.baseline}%
-                      {' · '}
-                      Validation lower bound:{' '}
-                      {strategy.validation.lowerBound === null
-                        ? '—'
-                        : `${strategy.validation.lowerBound.toFixed(1)}%`}
-                    </div>
-
-                    <p className="text-xs text-muted-foreground">
-                      {strategy.explanation}
-                    </p>
-                  </div>
-                ))}
-              </div>
-
-              <p className="text-xs text-muted-foreground">
-                Training uses historical data and does not guarantee
-                future outcomes. Validation is a historical test,
-                not a live trading signal.
-              </p>
-            </div>
-          )}
-        </CardContent>
-      </Card>
-
-      {/* ALL-MARKET LIVE COLLECTION MONITOR */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Activity className="size-5 text-primary" />
-            All-Market Live Collection Monitor
-          </CardTitle>
-
-          <CardDescription>
-            Live activity across every synthetic market returned by Deriv.
-          </CardDescription>
-        </CardHeader>
-
-        <CardContent className="space-y-4">
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-            <div className="rounded-lg border p-3">
-              <div className="text-xs text-muted-foreground">
-                Total collection speed
-              </div>
-              <div className="mt-2 text-2xl font-bold tabular-nums">
-                {liveStats.totalTicksPerSecond.toFixed(1)}
-              </div>
-              <div className="text-xs text-muted-foreground">
-                ticks / second
-              </div>
-            </div>
-
-            <div className="rounded-lg border p-3">
-              <div className="text-xs text-muted-foreground">
-                Active markets
-              </div>
-              <div className="mt-2 text-2xl font-bold tabular-nums text-green-500">
-                {liveStats.liveMarkets}
-              </div>
-              <div className="text-xs text-muted-foreground">
-                Receiving recent ticks
-              </div>
-            </div>
-
-            <div className="rounded-lg border p-3">
-              <div className="text-xs text-muted-foreground">
-                Waiting markets
-              </div>
-              <div className="mt-2 text-2xl font-bold tabular-nums">
-                {liveStats.waitingMarkets}
-              </div>
-              <div className="text-xs text-muted-foreground">
-                No recent ticks detected
-              </div>
-            </div>
-
-            <div className="rounded-lg border p-3">
-              <div className="text-xs text-muted-foreground">
-                Markets scanned
-              </div>
-              <div className="mt-2 text-2xl font-bold tabular-nums">
-                {markets.length}
-              </div>
-              <div className="text-xs text-muted-foreground">
-                Available markets
-              </div>
-            </div>
-          </div>
-
-          <div className="space-y-2">
-            <div className="font-semibold text-sm">
-              Individual market activity
-            </div>
-
-            {markets.map(market => {
-              const live = liveStats.perMarket[market.symbol]
-
-              return (
-                <div
-                  key={market.symbol}
-                  className="flex items-center justify-between gap-3 rounded-lg border p-3"
-                >
-                  <div className="min-w-0">
-                    <div className="truncate text-sm font-medium">
-                      {market.name}
-                    </div>
-                    <div className="text-xs text-muted-foreground">
-                      {market.symbol}
-                    </div>
-                  </div>
-
-                  <div className="shrink-0 text-right">
-                    <div
-                      className={cn(
-                        'text-xs font-bold',
-                        live?.status === 'LIVE' && 'text-green-500',
-                        live?.status === 'WAITING' && 'text-yellow-500',
-                        live?.status === 'STOPPED' && 'text-muted-foreground',
-                      )}
-                    >
-                      {live?.status ?? 'WAITING'}
-                    </div>
-                    <div className="text-xs tabular-nums text-muted-foreground">
-                      {(live?.rate ?? 0).toFixed(1)} ticks/s
-                    </div>
-                  </div>
-                </div>
-              )
-            })}
-          </div>
-
-          <p className="text-xs text-muted-foreground">
-            Speed is estimated from tick timestamps in the latest 10 seconds.
-            A waiting market may simply have no recent tick. Live speed depends
-            on Deriv's tick delivery and your connection.
+          <p className="text-sm text-muted-foreground">
+            CHECK requires at least 100 historical,
+            non-overlapping 10-second tests and a lower
+            confidence bound above baseline.
           </p>
-        </CardContent>
-      </Card>
+        </div>
 
-      {/* DATA COLLECTION PROGRESS */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <BrainCircuit className="size-5 text-primary" />
-            TickLens Data Collection Progress
-          </CardTitle>
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[650px] text-sm">
 
-          <CardDescription>
-            Collecting historical and live synthetic-market ticks.
-            Target: {MAX_TICKS_PER_MARKET.toLocaleString()} ticks per market.
-          </CardDescription>
-        </CardHeader>
+            <thead className="bg-muted/50 text-left">
+              <tr>
+                <th className="p-3">Market</th>
+                <th className="p-3">Selection</th>
+                <th className="p-3">Tests</th>
+                <th className="p-3">Accuracy</th>
+                <th className="p-3">Lower bound</th>
+                <th className="p-3">Signal</th>
+                <th className="p-3">Action</th>
+              </tr>
+            </thead>
 
-        <CardContent className="space-y-4">
-          <div className="grid gap-3 sm:grid-cols-3">
-            <div className="rounded-lg border p-3">
-              <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                <Database className="size-4" />
-                Total collected
-              </div>
-              <div className="mt-2 text-2xl font-bold tabular-nums">
-                {totalStored.toLocaleString()}
-              </div>
-              <div className="text-xs text-muted-foreground">
-                of {totalTarget.toLocaleString()} ticks
-              </div>
-            </div>
+            <tbody>
+              {rows.map(({ market, entry, evidence, ready }) => (
+                <tr key={market.symbol} className="border-t">
 
-            <div className="rounded-lg border p-3">
-              <div className="text-sm text-muted-foreground">
-                Markets selected
-              </div>
-              <div className="mt-2 text-2xl font-bold tabular-nums">
-                {markets.length}
-              </div>
-              <div className="text-xs text-muted-foreground">
-                Synthetic markets
-              </div>
-            </div>
+                  <td className="p-3 font-medium">
+                    {market.name}
 
-            <div className="rounded-lg border p-3">
-              <div className="text-sm text-muted-foreground">
-                Collection complete
-              </div>
-              <div className="mt-2 text-2xl font-bold tabular-nums">
-                {readyMarkets}/{markets.length}
-              </div>
-              <div className="text-xs text-muted-foreground">
-                Markets at target
-              </div>
-            </div>
-          </div>
-
-          <div className="space-y-2">
-            <div className="flex justify-between text-sm">
-              <span className="font-medium">
-                Overall collection
-              </span>
-              <span className="tabular-nums text-muted-foreground">
-                {totalProgress.toFixed(2)}%
-              </span>
-            </div>
-
-            <div className="h-3 overflow-hidden rounded-full bg-muted">
-              <div
-                className="h-full rounded-full bg-primary transition-all"
-                style={{
-                  width: `${Math.min(100, totalProgress)}%`,
-                }}
-              />
-            </div>
-          </div>
-
-          {storageError && (
-            <p className="text-sm text-destructive">
-              Storage error: {storageError}
-            </p>
-          )}
-
-          <div className="space-y-3">
-            <div className="font-semibold text-sm">
-              Individual market collection
-            </div>
-
-            {markets.map(market => {
-              const item = storageStats[market.symbol]
-              const count = item?.count ?? 0
-              const progress = item?.progress ?? 0
-              const complete = count >= MAX_TICKS_PER_MARKET
-              const live = liveStats.perMarket[market.symbol]
-
-              return (
-                <div key={market.symbol} className="space-y-1.5">
-                  <div className="flex items-center justify-between gap-2 text-sm">
-                    <div className="min-w-0">
-                      <span className="font-medium">
-                        {market.name}
-                      </span>
+                    {activeSymbol === market.symbol && (
                       <span className="ml-2 text-xs text-muted-foreground">
-                        {market.symbol}
+                        Active
                       </span>
-                    </div>
+                    )}
 
-                    <span className="shrink-0 tabular-nums text-xs text-muted-foreground">
-                      {count.toLocaleString()}/
-                      {MAX_TICKS_PER_MARKET.toLocaleString()}
-                    </span>
-                  </div>
+                    {entry?.error && (
+                      <div className="text-xs text-red-500">
+                        {entry.error}
+                      </div>
+                    )}
+                  </td>
 
-                  <div className="h-2 overflow-hidden rounded-full bg-muted">
-                    <div
-                      className={cn(
-                        'h-full rounded-full transition-all',
-                        complete ? 'bg-green-500' : 'bg-primary',
-                      )}
-                      style={{
-                        width: `${Math.min(100, progress)}%`,
-                      }}
-                    />
-                  </div>
+                  <td className="p-3">
+                    {evidence?.selection ?? '—'}
+                  </td>
 
-                  <div className="flex flex-wrap justify-between gap-2 text-xs text-muted-foreground">
-                    <span>{progress.toFixed(2)}% collected</span>
+                  <td className="p-3">
+                    {evidence?.tests ?? (ready ? '—' : 'Collecting')}
+                  </td>
 
-                    <span>
-                      {complete ? 'Target reached' : 'Collecting'}
-                    </span>
+                  <td className="p-3">
+                    {evidence?.accuracy == null
+                      ? '—'
+                      : `${evidence.accuracy.toFixed(1)}%`}
+                  </td>
 
+                  <td className="p-3">
+                    {evidence?.lowerBound == null
+                      ? '—'
+                      : `${evidence.lowerBound.toFixed(1)}%`}
+                  </td>
+
+                  <td className="p-3">
                     <span
-                      className={cn(
-                        'font-semibold',
-                        live?.status === 'LIVE' && 'text-green-500',
-                        live?.status === 'WAITING' && 'text-yellow-500',
-                        live?.status === 'STOPPED' && 'text-muted-foreground',
-                      )}
+                      className={
+                        evidence?.signal === 'CHECK'
+                          ? 'rounded-md bg-green-500/10 px-2 py-1 font-semibold text-green-600'
+                          : 'rounded-md bg-muted px-2 py-1'
+                      }
                     >
-                      {live?.status ?? 'WAITING'}
-                      {' · '}
-                      {(live?.rate ?? 0).toFixed(1)} ticks/s
+                      {evidence?.signal ?? 'WAIT'}
                     </span>
+                  </td>
+
+                  <td className="p-3">
+                    <button
+                      type="button"
+                      onClick={() => onAnalyze(market.symbol)}
+                      className="rounded-md border px-3 py-1.5"
+                    >
+                      Analyse
+                    </button>
+                  </td>
+
+                </tr>
+              ))}
+
+              {rows.length === 0 && (
+                <tr>
+                  <td
+                    colSpan={7}
+                    className="p-6 text-center text-muted-foreground"
+                  >
+                    No markets are available.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+
+          </table>
+        </div>
+      </div>
+
+      {/* Recent performance */}
+      <div className="rounded-xl border p-4">
+
+        <h3 className="font-semibold">
+          Recent signal results
+        </h3>
+
+        <p className="mb-3 text-sm text-muted-foreground">
+          CHECK signals are tracked until the first available
+          tick at or after 10 seconds. Results are saved
+          on this device.
+        </p>
+
+        {records.length === 0 ? (
+          <p className="text-sm text-muted-foreground">
+            No tracked signals yet. Start the scanner and
+            wait for a qualifying CHECK signal.
+          </p>
+        ) : (
+          <div className="space-y-2">
+
+            {records.map(record => (
+              <div
+                key={record.id}
+                className="flex flex-wrap items-center justify-between gap-2 border-b py-2 text-sm last:border-0"
+              >
+
+                <div>
+                  <div className="font-medium">
+                    {record.market} ·
+                    {CONTRACT_LABELS[record.contract]}
+                  </div>
+
+                  <div className="text-xs text-muted-foreground">
+                    {record.selection} ·
+                    {record.durationSeconds}s expiry
                   </div>
                 </div>
-              )
-            })}
-          </div>
 
-          <p className="text-xs text-muted-foreground">
-            Collection happens while the scanner is running and connected
-            to Deriv. Reaching the tick target means data collection is
-            complete, not that a trained or validated AI model is ready.
-          </p>
-        </CardContent>
-      </Card>
+                <span className="rounded-md bg-muted px-2 py-1 font-medium">
+                  {record.status}
+                </span>
 
-      {/* LIVE MARKET SCANNER */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Radar className="size-5 text-primary" />
-            All synthetic markets
-          </CardTitle>
-
-          <CardDescription>
-            Scans {markets.length} markets at once over the last{' '}
-            {windowSize.toLocaleString()} ticks each. Click a row to
-            analyse it in detail.
-          </CardDescription>
-
-          <CardAction>
-            <Button
-              onClick={onToggle}
-              variant={running ? 'destructive' : 'default'}
-              className="font-semibold"
-            >
-              {running
-                ? <Square className="fill-current" />
-                : <Play className="fill-current" />}
-              {running ? 'Stop scan' : 'Scan all markets'}
-            </Button>
-          </CardAction>
-        </CardHeader>
-
-        <CardContent className="space-y-3">
-          <div className="flex flex-wrap items-center gap-2 text-sm">
-            <span className="text-muted-foreground">
-              Rank by
-            </span>
-
-            {(
-              [
-                ['signal', 'Signal quality'],
-                ['bias', 'Digit bias'],
-                ['confidence', 'Prediction confidence'],
-                ['even', 'Even/Odd skew'],
-                ['over', `Over ${barrier}`],
-                ['under', `Under ${barrier}`],
-                ['differs', 'Differs'],
-                ['default', 'Market order'],
-              ] as [SortKey, string][]
-            ).map(([key, label]) => (
-              <Button
-                key={key}
-                size="xs"
-                variant={sort === key ? 'secondary' : 'ghost'}
-                onClick={() => setSort(key)}
-                aria-pressed={sort === key}
-              >
-                {label}
-              </Button>
+              </div>
             ))}
 
-            {running && loaded < markets.length && (
-              <span className="ml-auto flex items-center gap-1.5 text-xs text-muted-foreground">
-                <Loader2 className="size-3.5 animate-spin" />
-                Loaded {loaded}/{markets.length}
-              </span>
-            )}
           </div>
+        )}
+      </div>
 
-          <div className="overflow-x-auto rounded-lg border">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Market</TableHead>
-                  <TableHead className="text-right">Price</TableHead>
-                  <TableHead className="text-center">Last</TableHead>
-                  <TableHead className="text-right">Even</TableHead>
-                  <TableHead className="text-right">Over {barrier}</TableHead>
-                  <TableHead className="text-right">Under {barrier}</TableHead>
-                  <TableHead className="text-right">Rise</TableHead>
-                  <TableHead className="text-center">Hot / Cold</TableHead>
-                  <TableHead>Bias</TableHead>
-                  <TableHead className="text-center">Next digit</TableHead>
-                  <TableHead className="text-center">Best Differs</TableHead>
-                  <TableHead className="text-center">Signal</TableHead>
-                  <TableHead className="text-center">Stored ticks</TableHead>
-                  <TableHead />
-                </TableRow>
-              </TableHeader>
+      <p className="text-xs text-muted-foreground">
+        These are historical statistical estimates, not
+        guaranteed predictions. CHECK is for manual review,
+        not an instruction to place a trade.
+      </p>
 
-              <TableBody>
-                {rows.map(({ market, entry, stats, md, differs, evidence }) => {
-                  const quote =
-                    entry?.quotes[entry.quotes.length - 1]
-
-                  const stored = storageStats[market.symbol]
-
-                  return (
-                    <TableRow
-                      key={market.symbol}
-                      onClick={() => onAnalyze(market.symbol)}
-                      className={cn(
-                        'cursor-pointer',
-                        activeSymbol === market.symbol && 'bg-primary/5',
-                      )}
-                    >
-                      <TableCell>
-                        <div className="font-medium">
-                          {market.name}
-                        </div>
-                        <div className="tabular text-xs text-muted-foreground">
-                          {market.symbol} · {market.group}
-                        </div>
-                      </TableCell>
-
-                      {entry?.error ? (
-                        <TableCell
-                          colSpan={12}
-                          className="text-sm text-muted-foreground"
-                        >
-                          {entry.error}
-                        </TableCell>
-                      ) : stats && quote !== undefined ? (
-                        <>
-                          <TableCell className="tabular text-right">
-                            {quote.toFixed(entry.pipSize)}
-                          </TableCell>
-
-                          <TableCell className="text-center">
-                            <span className="tabular inline-flex size-7 items-center justify-center rounded-md bg-muted font-semibold">
-                              {entry.digits[entry.digits.length - 1]}
-                            </span>
-                          </TableCell>
-
-                          <Pct value={stats.even} />
-
-                          <Pct
-                            value={stats.over}
-                            expected={(9 - barrier) * 10}
-                          />
-
-                          <Pct
-                            value={stats.under}
-                            expected={barrier * 10}
-                          />
-
-                          <Pct value={stats.rise} />
-
-                          <TableCell className="tabular text-center">
-                            <span className="text-up">
-                              {stats.hottest}
-                            </span>
-                            <span className="px-1 text-muted-foreground">
-                              /
-                            </span>
-                            <span className="text-down">
-                              {stats.coldest}
-                            </span>
-                          </TableCell>
-
-                          <TableCell>
-                            <div className="flex items-center gap-2">
-                              <div className="h-1.5 w-16 overflow-hidden rounded-full bg-muted">
-                                <div
-                                  className={cn(
-                                    'h-full rounded-full',
-                                    stats.bias > 66
-                                      ? 'bg-warn'
-                                      : stats.bias > 33
-                                        ? 'bg-chart-2'
-                                        : 'bg-muted-foreground/50',
-                                  )}
-                                  style={{
-                                    width: `${Math.max(4, Math.min(100, stats.bias))}%`,
-                                  }}
-                                />
-                              </div>
-                              <span className="tabular text-xs text-muted-foreground">
-                                {stats.bias.toFixed(0)}
-                              </span>
-                            </div>
-                          </TableCell>
-
-                          <TableCell className="text-center">
-                            {stats.prediction ? (
-                              <span className="tabular inline-flex items-center gap-1.5">
-                                <span className="inline-flex size-7 items-center justify-center rounded-md bg-primary/15 font-bold text-primary">
-                                  {stats.prediction.digit}
-                                </span>
-                                <span className="text-xs text-muted-foreground">
-                                  {(stats.prediction.confidence * 100).toFixed(1)}%
-                                </span>
-                              </span>
-                            ) : (
-                              '—'
-                            )}
-                          </TableCell>
-
-                          <TableCell className="text-center">
-                            {md && differs !== null ? (
-                              <span className="tabular inline-flex items-center gap-1.5">
-                                <span className="inline-flex size-7 items-center justify-center rounded-md bg-chart-3/15 font-bold text-chart-3">
-                                  {md.bestDiffers}
-                                </span>
-                                <span className="text-xs text-muted-foreground">
-                                  {differs.toFixed(1)}%
-                                </span>
-                              </span>
-                            ) : (
-                              '—'
-                            )}
-                          </TableCell>
-
-                          <TableCell className="text-center">
-                            {evidence ? (
-                              <BadgeSignal signal={evidence.signal} />
-                            ) : (
-                              <span className="text-xs text-muted-foreground">
-                                WAIT
-                              </span>
-                            )}
-                          </TableCell>
-
-                          <TableCell className="text-center">
-                            <div className="text-xs tabular">
-                              {(stored?.count ?? 0).toLocaleString()}
-                            </div>
-                            <div className="text-xs text-muted-foreground">
-                              {(stored?.progress ?? 0).toFixed(1)}%
-                            </div>
-                          </TableCell>
-                        </>
-                      ) : (
-                        <TableCell
-                          colSpan={12}
-                          className="text-sm text-muted-foreground"
-                        >
-                          {running
-                            ? 'Loading…'
-                            : 'Press “Scan all markets” to load live data'}
-                        </TableCell>
-                      )}
-
-                      <TableCell className="text-right">
-                        <Button
-                          size="icon-sm"
-                          variant="ghost"
-                          aria-label={`Analyse ${market.name}`}
-                          onClick={event => {
-                            event.stopPropagation()
-                            onAnalyze(market.symbol)
-                          }}
-                        >
-                          <ArrowRight />
-                        </Button>
-                      </TableCell>
-                    </TableRow>
-                  )
-                })}
-              </TableBody>
-            </Table>
-          </div>
-
-          <p className="text-xs text-muted-foreground">
-            Signal quality ranks markets using the selected contract's
-            historical lower-bound margin. A WAIT result means the evidence
-            has not met the scanner's threshold. Ranking is not a prediction
-            guarantee.
-          </p>
-        </CardContent>
-      </Card>
-    </div>
+    </section>
   )
 }
 
-function BadgeSignal({
-  signal,
-}: {
-  signal: 'CHECK' | 'WAIT'
-}) {
-  return (
-    <span
-      className={cn(
-        'rounded-md px-2 py-1 text-xs font-bold',
-        signal === 'CHECK'
-          ? 'bg-green-500/10 text-green-600'
-          : 'bg-muted text-muted-foreground',
-      )}
-    >
-      {signal}
-    </span>
-  )
-}
-
-function Pct({
+function Metric({
+  label,
   value,
-  expected = 50,
 }: {
-  value: number
-  expected?: number
+  label: string
+  value: string | number
 }) {
-  const skew = Math.abs(value - expected)
-
   return (
-    <TableCell
-      className={cn(
-        'tabular text-right',
-        skew >= 5 && 'font-semibold text-warn',
-      )}
-    >
-      {value.toFixed(1)}%
-    </TableCell>
+    <div className="rounded-xl border p-3">
+      <div className="text-xs text-muted-foreground">
+        {label}
+      </div>
+
+      <div className="mt-1 text-xl font-semibold tabular-nums">
+        {value}
+      </div>
+    </div>
   )
 }
