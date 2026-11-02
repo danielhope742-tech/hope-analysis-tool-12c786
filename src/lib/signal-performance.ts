@@ -1,5 +1,3 @@
-
-
 export type TrackedContract =
   | 'matches'
   | 'differs'
@@ -64,8 +62,8 @@ function readRecords(): SignalRecord[] {
     const saved = window.localStorage.getItem(STORAGE_KEY)
     if (!saved) return []
 
-    const parsed = JSON.parse(saved)
-    return Array.isArray(parsed) ? parsed : []
+    const parsed: unknown = JSON.parse(saved)
+    return Array.isArray(parsed) ? parsed as SignalRecord[] : []
   } catch {
     return []
   }
@@ -80,7 +78,7 @@ function saveRecords(records: SignalRecord[]): void {
       JSON.stringify(records.slice(-MAX_RECORDS)),
     )
   } catch {
-    // Storage may be unavailable or full.
+    // Local storage may be unavailable or full.
   }
 }
 
@@ -147,7 +145,7 @@ export function processSignalSnapshot(
     epoch: snapshot.epochs![index],
   }))
     .filter(
-      (tick) =>
+      tick =>
         Number.isFinite(tick.quote) &&
         Number.isInteger(tick.digit) &&
         tick.digit >= 0 &&
@@ -158,7 +156,7 @@ export function processSignalSnapshot(
 
   if (ticks.length < 2) return records
 
-  // Settle signals only when the 10-second expiry is reached.
+  // Settle pending signals at the first tick at or after expiry.
   for (const record of records) {
     if (
       record.status !== 'PENDING' ||
@@ -171,7 +169,7 @@ export function processSignalSnapshot(
       record.signalEpoch + record.durationSeconds
 
     const expiryTick = ticks.find(
-      (tick) => tick.epoch >= expiryEpoch,
+      tick => tick.epoch >= expiryEpoch,
     )
 
     if (!expiryTick) continue
@@ -188,7 +186,7 @@ export function processSignalSnapshot(
     record.resultDigit = expiryTick.digit
   }
 
-  // Record new CHECK signals only.
+  // Record only CHECK signals.
   if (snapshot.signal === 'CHECK') {
     const lastTick = ticks[ticks.length - 1]
 
@@ -219,10 +217,24 @@ export function processSignalSnapshot(
     ].join('|')
 
     const alreadyRecorded = records.some(
-      (record) => record.id === id,
+      record => record.id === id,
     )
 
-    if (!alreadyRecorded && validSelection) {
+    // Do not create overlapping pending signals for the same
+    // market, contract and duration.
+    const hasPendingSignal = records.some(
+      record =>
+        record.status === 'PENDING' &&
+        record.market === snapshot.market &&
+        record.contract === snapshot.contract &&
+        record.durationSeconds === durationSeconds,
+    )
+
+    if (
+      !alreadyRecorded &&
+      !hasPendingSignal &&
+      validSelection
+    ) {
       records.push({
         id,
         market: snapshot.market,
@@ -255,15 +267,15 @@ export function getSignalPerformance(): PerformanceStats {
   const records = readRecords()
 
   const wins = records.filter(
-    (record) => record.status === 'WIN',
+    record => record.status === 'WIN',
   ).length
 
   const losses = records.filter(
-    (record) => record.status === 'LOSS',
+    record => record.status === 'LOSS',
   ).length
 
   const pending = records.filter(
-    (record) => record.status === 'PENDING',
+    record => record.status === 'PENDING',
   ).length
 
   const total = wins + losses
@@ -283,6 +295,6 @@ export function clearSignalPerformance(): void {
   try {
     window.localStorage.removeItem(STORAGE_KEY)
   } catch {
-    // Storage may be unavailable.
+    // Local storage may be unavailable.
   }
-}
+      }
