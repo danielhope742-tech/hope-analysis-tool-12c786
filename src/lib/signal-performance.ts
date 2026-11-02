@@ -1,254 +1,272 @@
+
+
 export type TrackedContract =
   | 'matches'
   | 'differs'
   | 'even'
   | 'odd'
+  | 'over'
+  | 'under'
   | 'rise'
-  | 'fall';
+  | 'fall'
 
 export interface SignalSnapshot {
-  market: string;
-  contract: TrackedContract;
-  selection: string;
-  signal: 'CHECK' | 'WAIT';
-  probability: number;
-  baseline: number;
-  lowerBound: number;
-  quotes: number[];
-  digits: number[];
-  epochs?: number[];
+  market: string
+  contract: TrackedContract
+  selection: string
+  signal: 'CHECK' | 'WAIT'
+  probability: number
+  baseline: number
+  lowerBound: number
+  quotes: number[]
+  digits: number[]
+  epochs?: number[]
+  barrier?: number
+  durationSeconds?: number
 }
 
 export interface SignalRecord {
-  id: string;
-  market: string;
-  contract: TrackedContract;
-  selection: string;
-  signalEpoch: number;
-  signalQuote: number;
-  signalDigit: number;
-  probability: number;
-  baseline: number;
-  lowerBound: number;
-  status: 'PENDING' | 'WIN' | 'LOSS';
-  resultEpoch?: number;
-  resultQuote?: number;
-  resultDigit?: number;
-  createdAt: number;
+  id: string
+  market: string
+  contract: TrackedContract
+  selection: string
+  signalEpoch: number
+  signalQuote: number
+  signalDigit: number
+  probability: number
+  baseline: number
+  lowerBound: number
+  barrier?: number
+  durationSeconds: number
+  status: 'PENDING' | 'WIN' | 'LOSS'
+  resultEpoch?: number
+  resultQuote?: number
+  resultDigit?: number
+  createdAt: number
 }
 
 export interface PerformanceStats {
-  total: number;
-  wins: number;
-  losses: number;
-  pending: number;
-  winRate: number;
+  total: number
+  wins: number
+  losses: number
+  pending: number
+  winRate: number
 }
 
-const STORAGE_KEY = 'ticklens_signal_performance_v1';
-const MAX_RECORDS = 1000;
+const STORAGE_KEY = 'ticklens_signal_performance_10s_v2'
+const MAX_RECORDS = 1000
+const DEFAULT_DURATION_SECONDS = 10
 
 function readRecords(): SignalRecord[] {
-  if (typeof window === 'undefined') return [];
+  if (typeof window === 'undefined') return []
 
   try {
-    const saved = window.localStorage.getItem(STORAGE_KEY);
-    if (!saved) return [];
+    const saved = window.localStorage.getItem(STORAGE_KEY)
+    if (!saved) return []
 
-    const parsed = JSON.parse(saved);
-
-    return Array.isArray(parsed) ? parsed : [];
+    const parsed = JSON.parse(saved)
+    return Array.isArray(parsed) ? parsed : []
   } catch {
-    return [];
+    return []
   }
 }
 
 function saveRecords(records: SignalRecord[]): void {
-  if (typeof window === 'undefined') return;
+  if (typeof window === 'undefined') return
 
   try {
     window.localStorage.setItem(
       STORAGE_KEY,
-      JSON.stringify(records.slice(-MAX_RECORDS))
-    );
+      JSON.stringify(records.slice(-MAX_RECORDS)),
+    )
   } catch {
     // Storage may be unavailable or full.
   }
 }
 
 function extractDigit(selection: string): number | null {
-  const match = selection.match(/\b([0-9])\b/);
-
-  if (!match) return null;
-
-  return Number(match[1]);
+  const match = selection.match(/\b([0-9])\b/)
+  return match ? Number(match[1]) : null
 }
 
 function evaluateOutcome(
-  contract: TrackedContract,
-  selection: string,
-  signalQuote: number,
+  record: SignalRecord,
   resultQuote: number,
-  resultDigit: number
+  resultDigit: number,
 ): boolean {
-  switch (contract) {
+  switch (record.contract) {
     case 'matches': {
-      const digit = extractDigit(selection);
-      return digit !== null && resultDigit === digit;
+      const digit = extractDigit(record.selection)
+      return digit !== null && resultDigit === digit
     }
 
     case 'differs': {
-      const digit = extractDigit(selection);
-      return digit !== null && resultDigit !== digit;
+      const digit = extractDigit(record.selection)
+      return digit !== null && resultDigit !== digit
     }
 
     case 'even':
-      return resultDigit % 2 === 0;
+      return resultDigit % 2 === 0
 
     case 'odd':
-      return resultDigit % 2 === 1;
+      return resultDigit % 2 === 1
+
+    case 'over':
+      return resultDigit > (record.barrier ?? 4)
+
+    case 'under':
+      return resultDigit < (record.barrier ?? 4)
 
     case 'rise':
-      return resultQuote > signalQuote;
+      return resultQuote > record.signalQuote
 
     case 'fall':
-      return resultQuote < signalQuote;
+      return resultQuote < record.signalQuote
 
     default:
-      return false;
+      return false
   }
 }
 
 export function processSignalSnapshot(
-  snapshot: SignalSnapshot
+  snapshot: SignalSnapshot,
 ): SignalRecord[] {
-  const records = readRecords();
+  const records = readRecords()
 
   const count = Math.min(
     snapshot.quotes.length,
     snapshot.digits.length,
-    snapshot.epochs?.length ?? 0
-  );
+    snapshot.epochs?.length ?? 0,
+  )
 
-  if (count < 2) return records;
+  if (count < 2) return records
 
   const ticks = Array.from({ length: count }, (_, index) => ({
     quote: snapshot.quotes[index],
     digit: snapshot.digits[index],
     epoch: snapshot.epochs![index],
   }))
-    .filter(tick =>
-      Number.isFinite(tick.quote) &&
-      Number.isInteger(tick.digit) &&
-      tick.digit >= 0 &&
-      tick.digit <= 9 &&
-      Number.isFinite(tick.epoch)
+    .filter(
+      (tick) =>
+        Number.isFinite(tick.quote) &&
+        Number.isInteger(tick.digit) &&
+        tick.digit >= 0 &&
+        tick.digit <= 9 &&
+        Number.isFinite(tick.epoch),
     )
-    .sort((a, b) => a.epoch - b.epoch);
+    .sort((a, b) => a.epoch - b.epoch)
 
-  if (ticks.length < 2) return records;
+  if (ticks.length < 2) return records
 
-  // Settle pending signals using the first later tick.
+  // Settle signals only when the 10-second expiry is reached.
   for (const record of records) {
     if (
       record.status !== 'PENDING' ||
       record.market !== snapshot.market
     ) {
-      continue;
+      continue
     }
 
-    const nextTick = ticks.find(
-      tick => tick.epoch > record.signalEpoch
-    );
+    const expiryEpoch =
+      record.signalEpoch + record.durationSeconds
 
-    if (!nextTick) continue;
+    const expiryTick = ticks.find(
+      (tick) => tick.epoch >= expiryEpoch,
+    )
+
+    if (!expiryTick) continue
 
     const won = evaluateOutcome(
-      record.contract,
-      record.selection,
-      record.signalQuote,
-      nextTick.quote,
-      nextTick.digit
-    );
+      record,
+      expiryTick.quote,
+      expiryTick.digit,
+    )
 
-    record.status = won ? 'WIN' : 'LOSS';
-    record.resultEpoch = nextTick.epoch;
-    record.resultQuote = nextTick.quote;
-    record.resultDigit = nextTick.digit;
+    record.status = won ? 'WIN' : 'LOSS'
+    record.resultEpoch = expiryTick.epoch
+    record.resultQuote = expiryTick.quote
+    record.resultDigit = expiryTick.digit
   }
 
   // Record new CHECK signals only.
   if (snapshot.signal === 'CHECK') {
-    const lastTick = ticks[ticks.length - 1];
+    const lastTick = ticks[ticks.length - 1]
 
-    if (lastTick) {
-      const selectedDigit =
-        snapshot.contract === 'matches' ||
-        snapshot.contract === 'differs'
-          ? extractDigit(snapshot.selection)
-          : null;
+    const durationSeconds =
+      Number.isFinite(snapshot.durationSeconds) &&
+      (snapshot.durationSeconds ?? 0) > 0
+        ? Math.floor(snapshot.durationSeconds!)
+        : DEFAULT_DURATION_SECONDS
 
-      const validSelection =
-        snapshot.contract === 'matches' ||
-        snapshot.contract === 'differs'
-          ? selectedDigit !== null
-          : true;
+    const selectedDigit =
+      snapshot.contract === 'matches' ||
+      snapshot.contract === 'differs'
+        ? extractDigit(snapshot.selection)
+        : null
 
-      const id = [
-        snapshot.market,
-        snapshot.contract,
-        snapshot.selection,
-        lastTick.epoch,
-      ].join('|');
+    const validSelection =
+      snapshot.contract === 'matches' ||
+      snapshot.contract === 'differs'
+        ? selectedDigit !== null
+        : true
 
-      const alreadyRecorded = records.some(
-        record => record.id === id
-      );
+    const id = [
+      snapshot.market,
+      snapshot.contract,
+      snapshot.selection,
+      lastTick.epoch,
+      durationSeconds,
+    ].join('|')
 
-      if (!alreadyRecorded && validSelection) {
-        records.push({
-          id,
-          market: snapshot.market,
-          contract: snapshot.contract,
-          selection: snapshot.selection,
-          signalEpoch: lastTick.epoch,
-          signalQuote: lastTick.quote,
-          signalDigit: lastTick.digit,
-          probability: snapshot.probability,
-          baseline: snapshot.baseline,
-          lowerBound: snapshot.lowerBound,
-          status: 'PENDING',
-          createdAt: Date.now(),
-        });
-      }
+    const alreadyRecorded = records.some(
+      (record) => record.id === id,
+    )
+
+    if (!alreadyRecorded && validSelection) {
+      records.push({
+        id,
+        market: snapshot.market,
+        contract: snapshot.contract,
+        selection: snapshot.selection,
+        signalEpoch: lastTick.epoch,
+        signalQuote: lastTick.quote,
+        signalDigit: lastTick.digit,
+        probability: snapshot.probability,
+        baseline: snapshot.baseline,
+        lowerBound: snapshot.lowerBound,
+        barrier: snapshot.barrier,
+        durationSeconds,
+        status: 'PENDING',
+        createdAt: Date.now(),
+      })
     }
   }
 
-  saveRecords(records);
+  saveRecords(records)
 
-  return records;
+  return records
 }
 
 export function getSignalRecords(): SignalRecord[] {
-  return readRecords().slice().reverse();
+  return readRecords().slice().reverse()
 }
 
 export function getSignalPerformance(): PerformanceStats {
-  const records = readRecords();
+  const records = readRecords()
 
   const wins = records.filter(
-    record => record.status === 'WIN'
-  ).length;
+    (record) => record.status === 'WIN',
+  ).length
 
   const losses = records.filter(
-    record => record.status === 'LOSS'
-  ).length;
+    (record) => record.status === 'LOSS',
+  ).length
 
   const pending = records.filter(
-    record => record.status === 'PENDING'
-  ).length;
+    (record) => record.status === 'PENDING',
+  ).length
 
-  const total = wins + losses;
+  const total = wins + losses
 
   return {
     total,
@@ -256,15 +274,15 @@ export function getSignalPerformance(): PerformanceStats {
     losses,
     pending,
     winRate: total > 0 ? (wins / total) * 100 : 0,
-  };
+  }
 }
 
 export function clearSignalPerformance(): void {
-  if (typeof window === 'undefined') return;
+  if (typeof window === 'undefined') return
 
   try {
-    window.localStorage.removeItem(STORAGE_KEY);
+    window.localStorage.removeItem(STORAGE_KEY)
   } catch {
     // Storage may be unavailable.
   }
-        }
+}
