@@ -61,8 +61,9 @@ export interface ContractEvidence {
 }
 
 const DIGITS = Array.from({ length: 10 }, (_, i) => i)
-const MIN_TESTS = 100
+const MIN_TESTS = 500
 const MAX_BACKTEST_TESTS = 500
+
 
 function validDigits(digits: number[]): number[] {
   return digits.filter(
