@@ -10,7 +10,7 @@
 export const MAX_TICKS_PER_MARKET = 100_000
 
 const DB_NAME = 'TickLensAI'
-const DB_VERSION = 1
+const DB_VERSION = 3
 const STORE_NAME = 'ticks'
 
 export interface StoredTick {
