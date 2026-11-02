@@ -707,3 +707,203 @@ export function analyzeContractEvidence(
       : evidence.reason,
   }
 }
+
+/**
+ * Duration-aware walk-forward backtest.
+ * Evaluates the first available tick at or after the expiry time.
+ * Historical test windows are spaced to reduce overlap.
+ */
+export function backtestContractDuration(
+  contract: ContractType,
+  digitsInput: number[],
+  quotesInput: number[],
+  epochsInput: number[],
+  barrier = 4,
+  durationSeconds = 10,
+): ContractEvidence {
+  const safeBarrier = clampBarrier(barrier)
+  const duration = Math.max(1, Math.floor(durationSeconds))
+
+  const count = Math.min(
+    digitsInput.length,
+    quotesInput.length,
+    epochsInput.length,
+  )
+
+  const ticks = Array.from({ length: count }, (_, index) => ({
+    digit: digitsInput[index],
+    quote: quotesInput[index],
+    epoch: epochsInput[index],
+  }))
+    .filter(
+      tick =>
+        Number.isInteger(tick.digit) &&
+        tick.digit >= 0 &&
+        tick.digit <= 9 &&
+        Number.isFinite(tick.quote) &&
+        Number.isFinite(tick.epoch),
+    )
+    .sort((a, b) => a.epoch - b.epoch)
+
+  const isMovement =
+    contract === 'rise' || contract === 'fall'
+
+  let tests = 0
+  let hits = 0
+
+  const candidates: Array<{
+    start: number
+    expiry: number
+  }> = []
+
+  // Create non-overlapping historical expiry windows.
+  let start = 20
+
+  while (start < ticks.length - 1) {
+    const targetEpoch = ticks[start].epoch + duration
+
+    let expiry = start + 1
+
+    while (
+      expiry < ticks.length &&
+      ticks[expiry].epoch < targetEpoch
+    ) {
+      expiry++
+    }
+
+    if (expiry >= ticks.length) break
+
+    candidates.push({ start, expiry })
+    start = expiry + 1
+  }
+
+  const selectedTests = candidates.slice(-MAX_BACKTEST_TESTS)
+
+  for (const test of selectedTests) {
+    const startTick = ticks[test.start]
+    const expiryTick = ticks[test.expiry]
+
+    const pastDigits = ticks
+      .slice(0, test.start + 1)
+      .map(tick => tick.digit)
+
+    const pastQuotes = ticks
+      .slice(0, test.start + 1)
+      .map(tick => tick.quote)
+
+    let won = false
+
+    if (isMovement) {
+      won =
+        contract === 'rise'
+          ? expiryTick.quote > startTick.quote
+          : expiryTick.quote < startTick.quote
+    } else {
+      const actual = expiryTick.digit
+
+      switch (contract) {
+        case 'matches': {
+          const prediction = predictNextDigit(pastDigits)
+          if (!prediction) continue
+          won = actual === prediction.ranked[0]
+          break
+        }
+
+        case 'differs': {
+          const prediction = predictNextDigit(pastDigits)
+          if (!prediction) continue
+          won = actual !== prediction.ranked[9]
+          break
+        }
+
+        case 'even':
+          won = actual % 2 === 0
+          break
+
+        case 'odd':
+          won = actual % 2 === 1
+          break
+
+        case 'over':
+          won = actual > safeBarrier
+          break
+
+        case 'under':
+          won = actual < safeBarrier
+          break
+
+        case 'rise':
+        case 'fall':
+          break
+      }
+    }
+
+    tests++
+    if (won) hits++
+  }
+
+  const baseline = contractBaseline(contract, safeBarrier)
+  const accuracy = tests > 0 ? (hits / tests) * 100 : null
+  const lower = wilsonLowerBound(hits, tests)
+
+  const edgeDemonstrated =
+    tests >= MIN_TESTS &&
+    lower !== null &&
+    lower * 100 > baseline
+
+  const latestDigits = ticks.map(tick => tick.digit)
+  const latestQuotes = ticks.map(tick => tick.quote)
+
+  const latestDigitPrediction =
+    predictNextDigit(latestDigits)
+
+  let selection = contractSelection(contract, safeBarrier)
+
+  if (contract === 'matches' && latestDigitPrediction) {
+    selection = `Digit ${latestDigitPrediction.ranked[0]}`
+  }
+
+  if (contract === 'differs' && latestDigitPrediction) {
+    selection = `Differs ${latestDigitPrediction.ranked[9]}`
+  }
+
+  return {
+    contract,
+    selection,
+    probability: accuracy ?? 0,
+    tests,
+    hits,
+    accuracy,
+    baseline,
+    lowerBound: lower === null ? null : lower * 100,
+    edgeDemonstrated,
+    signal: edgeDemonstrated ? 'CHECK' : 'WAIT',
+    reason:
+      tests < MIN_TESTS
+        ? `Only ${tests} valid non-overlapping ${duration}-second tests. At least ${MIN_TESTS} are required.`
+        : edgeDemonstrated
+          ? `Historical ${duration}-second walk-forward accuracy exceeded the reference baseline. This does not guarantee the next result.`
+          : `No demonstrated advantage over the reference baseline in ${duration}-second expiry tests.`,
+  }
+}
+
+/**
+ * Analyze a market using a duration-aware backtest.
+ */
+export function analyzeContractEvidenceAtDuration(
+  contract: ContractType,
+  digits: number[],
+  quotes: number[],
+  epochs: number[],
+  barrier = 4,
+  durationSeconds = 10,
+): ContractEvidence {
+  return backtestContractDuration(
+    contract,
+    digits,
+    quotes,
+    epochs,
+    barrier,
+    durationSeconds,
+  )
+}
